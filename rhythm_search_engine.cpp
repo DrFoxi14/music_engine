@@ -561,6 +561,21 @@ private:
                 if (!f_.kinds.empty() && !f_.kinds.count(event.kind)) continue;
                 if (!f_.denominators.empty() && !f_.denominators.count(event.denominator)) continue;
                 if (!f_.durations.empty() && !f_.durations.count(reducedFraction(event.durationNum,event.durationDen))) continue;
+                if (event.kind == "tuplet" || event.kind == "triplet") {
+                    const std::string ratio = std::to_string(event.actualCount) + ":" +
+                                              std::to_string(event.normalCount);
+                    if (!f_.tupletRatios.empty() && !f_.tupletRatios.count(ratio)) continue;
+                    if (!f_.tupletPatterns.empty()) {
+                        std::string mask;
+                        for (bool slot : event.tupletSlots) mask += slot ? 'N' : 'R';
+                        if (!f_.tupletPatterns.count(ratio + ":" + mask)) continue;
+                    }
+                    if (event.kind == "triplet" && !f_.tripletPatterns.empty()) {
+                        std::string mask;
+                        for (bool slot : event.tupletSlots) mask += slot ? 'N' : 'R';
+                        if (!f_.tripletPatterns.count(mask)) continue;
+                    }
+                }
                 allowed_.push_back(&event);
                 minTicks_ = std::min(minTicks_, event.ticks);
                 maxTicks_ = std::max(maxTicks_, event.ticks);
