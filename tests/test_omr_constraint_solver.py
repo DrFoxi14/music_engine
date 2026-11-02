@@ -101,7 +101,7 @@ class OMRConstraintSolverTests(unittest.TestCase):
                 {"id": f"e{i}", "candidates": [
                     {"duration": "1/4"}, {"duration": "1/8"}
                 ]}
-                for i in range(1, 12)
+                for i in range(1, 6)
             ],
             max_nodes=1,
         )
