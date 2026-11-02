@@ -90,6 +90,10 @@ uint64_t parseUInt(const std::string& text, const std::string& label) {
 
 bool isPowerOfTwo(uint64_t x) { return x && !(x & (x - 1)); }
 
+// 27720 = lcm(1..12): every tuplet with up to twelve slots lands exactly on the
+// integer grid, as in rhythm_search_engine.
+constexpr uint64_t kGridPerWhole = 27720;
+
 Rational parseFraction(const std::string& text) {
     const size_t slash = text.find('/');
     if (slash == std::string::npos) throw std::invalid_argument("duration must be a fraction such as 1/4");
@@ -147,7 +151,16 @@ InputEvent parseEvent(const std::string& token, uint64_t ticksPerWhole) {
 
     for (const std::string& rawCandidate : split(token.substr(equals + 1), '|')) {
         const size_t colon = rawCandidate.find(':');
-        const Rational duration = parseFraction(rawCandidate.substr(0, colon));
+        const std::string durationText = rawCandidate.substr(0, colon);
+        if (durationText == "none") {
+            // The Visual Engine may be wrong that a symbol exists at all (a
+            // duplicated or spurious notehead). "none" occupies no time.
+            const double confidence =
+                colon == std::string::npos ? 1.0 : parseConfidence(rawCandidate.substr(colon + 1));
+            event.candidates.push_back(Candidate{Rational(0, 1), 0, confidence});
+            continue;
+        }
+        const Rational duration = parseFraction(durationText);
         const double confidence =
             colon == std::string::npos ? 1.0 : parseConfidence(rawCandidate.substr(colon + 1));
 
@@ -190,6 +203,7 @@ std::vector<std::string> suggestedChecks(const std::vector<Rational>& durations)
         }
     }
     if (dottedPair) checks.push_back("augmentation_dot");
+    if (values.count("0/1")) checks.push_back("symbol_existence");
     if (checks.empty()) checks.push_back("reinspect_symbol_and_local_context");
     return checks;
 }
@@ -200,7 +214,7 @@ public:
            SearchConfig config, std::vector<InputEvent> events)
         : numerator_(numerator), denominator_(denominator),
           maxDenominator_(maxDenominator), config_(config), events_(std::move(events)),
-          ticksPerWhole_(static_cast<uint64_t>(6) * maxDenominator_) {
+          ticksPerWhole_(kGridPerWhole * static_cast<uint64_t>(maxDenominator_)) {
         if (numerator_ <= 0 || numerator_ > 10000) throw std::invalid_argument("meter numerator must be 1..10000");
         if (!isPowerOfTwo(static_cast<uint64_t>(denominator_)) ||
             static_cast<uint64_t>(denominator_) > static_cast<uint64_t>(maxDenominator_))
@@ -215,7 +229,7 @@ public:
         if (scaled % static_cast<uint64_t>(denominator_) != 0)
             throw std::invalid_argument("meter cannot be represented at this resolution");
         targetTicks_ = scaled / static_cast<uint64_t>(denominator_);
-        if (targetTicks_ > 2000000) throw std::invalid_argument("measure exceeds solver grid limit");
+        if (targetTicks_ > 1000000000ULL) throw std::invalid_argument("measure exceeds solver grid limit");
 
         for (const auto& event : events_) {
             if (!ids_.insert(event.id).second) throw std::invalid_argument("duplicate event id: " + event.id);
@@ -270,7 +284,23 @@ public:
             << "\",\"nodes_visited\":" << nodesVisited_
             << ",\"valid_assignments\":" << validCount_
             << ",\"truncated\":" << (truncated_ ? "true" : "false")
-            << ",\"solutions\":[";
+            << ",\"min_total_whole\":\"" << Rational(suffixMin_[0], ticksPerWhole_).str()
+            << "\",\"max_total_whole\":\"" << Rational(suffixMax_[0], ticksPerWhole_).str() << "\"";
+        if (validCount_ == 0 && !truncated_) {
+            // Why the measure cannot close: too little time even with every longest
+            // candidate (a symbol was missed), too much even with every shortest (a
+            // spurious symbol or a missed barline), or no exact combination.
+            if (suffixMax_[0] < targetTicks_) {
+                out << ",\"gap\":\"missing\",\"gap_whole\":\""
+                    << Rational(targetTicks_ - suffixMax_[0], ticksPerWhole_).str() << "\"";
+            } else if (suffixMin_[0] > targetTicks_) {
+                out << ",\"gap\":\"excess\",\"gap_whole\":\""
+                    << Rational(suffixMin_[0] - targetTicks_, ticksPerWhole_).str() << "\"";
+            } else {
+                out << ",\"gap\":\"no_exact_combination\"";
+            }
+        }
+        out << ",\"solutions\":[";
         for (size_t s = 0; s < solutions_.size(); ++s) {
             if (s) out << ',';
             appendSolution(out, solutions_[s]);
@@ -397,7 +427,8 @@ private:
             if (i) out << ',';
             const Candidate& candidate = events_[i].candidates[solution.choices[i]];
             out << "{\"event_id\":\"" << jsonEscape(events_[i].id)
-                << "\",\"duration_whole\":\"" << candidate.duration.str()
+                << "\",\"present\":" << (candidate.ticks ? "true" : "false")
+                << ",\"duration_whole\":\"" << candidate.duration.str()
                 << "\",\"onset_whole\":\"" << Rational(onset, ticksPerWhole_).str()
                 << "\",\"confidence\":" << candidate.confidence << '}';
             onset += candidate.ticks;
@@ -462,7 +493,7 @@ int main(int argc, char** argv) {
                     } else if (token.rfind("max_nodes=", 0) == 0) {
                         config.maxNodes = parseUInt(token.substr(10), "max_nodes");
                     } else {
-                        events.push_back(parseEvent(token, static_cast<uint64_t>(6) * maxDenominator));
+                        events.push_back(parseEvent(token, kGridPerWhole * static_cast<uint64_t>(maxDenominator)));
                     }
                 }
 

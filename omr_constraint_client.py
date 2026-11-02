@@ -49,6 +49,11 @@ class OMRConstraintClient:
     @staticmethod
     def _candidate_text(candidate: Mapping[str, Any]) -> str:
         duration = str(candidate["duration"])
+        confidence = float(candidate.get("confidence", 1.0))
+        if not math.isfinite(confidence) or not 0.0 < confidence <= 1.0:
+            raise ValueError("confidence must be in (0, 1]")
+        if duration == "none":                      # the symbol may not exist
+            return f"none:{confidence:.12g}"
         parts = duration.split("/")
         if len(parts) != 2:
             raise ValueError(f"duration must look like 1/4, got {duration!r}")

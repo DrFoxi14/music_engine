@@ -119,6 +119,47 @@ class OMRConstraintSolverTests(unittest.TestCase):
         self.assertEqual(result["status"], "resolved_unique")
         self.assertEqual(result["solutions"][0]["events"][1]["onset_whole"], "1/2")
 
+    def test_quintuplet_durations_are_exact(self) -> None:
+        result = self.solver.resolve(
+            "4/4",
+            [{"id": f"q{i}", "candidates": [{"duration": "1/5"}, {"duration": "1/4"}]} for i in range(5)],
+        )
+        self.assertEqual(result["status"], "resolved_unique")
+        self.assertTrue(all(e["duration_whole"] == "1/5" for e in result["solutions"][0]["events"]))
+
+    def test_spurious_event_can_be_removed(self) -> None:
+        result = self.solver.resolve(
+            "4/4",
+            [
+                {"id": "a", "candidates": [{"duration": "1/2"}]},
+                {"id": "b", "candidates": [{"duration": "1/4"}]},
+                {"id": "dup", "candidates": [{"duration": "1/4", "confidence": 0.6},
+                                             {"duration": "none", "confidence": 0.4}]},
+                {"id": "c", "candidates": [{"duration": "1/4"}]},
+            ],
+        )
+        self.assertEqual(result["status"], "resolved_unique")
+        dup = result["solutions"][0]["events"][2]
+        self.assertFalse(dup["present"])
+        self.assertIn("symbol_existence", result["event_support"][2]["suggested_visual_checks"])
+
+    def test_missing_time_is_reported(self) -> None:
+        result = self.solver.resolve(
+            "4/4",
+            [{"id": "a", "candidates": [{"duration": "1/2"}]}, {"id": "b", "candidates": [{"duration": "1/4"}]}],
+        )
+        self.assertEqual(result["status"], "inconsistent")
+        self.assertEqual(result["gap"], "missing")
+        self.assertEqual(result["gap_whole"], "1/4")
+
+    def test_excess_time_is_reported(self) -> None:
+        result = self.solver.resolve(
+            "3/4",
+            [{"id": "a", "candidates": [{"duration": "1/2"}]}, {"id": "b", "candidates": [{"duration": "1/2"}]}],
+        )
+        self.assertEqual(result["gap"], "excess")
+        self.assertEqual(result["gap_whole"], "1/4")
+
 
 if __name__ == "__main__":
     unittest.main()

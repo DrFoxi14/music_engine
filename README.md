@@ -102,7 +102,7 @@ The engine pre-generates these common actual:normal ratios: `3:2`, `4:3`, `5:4`,
 
 For generic tuplets, the JSON result exposes the ratio, every note/rest slot, and each slot's exact duration. For example, `5:4:NNRNN` means note–note–rest–note–note in a five-slot group. The `durations` filter applies to the entire tuplet group; slot duration is returned separately.
 
-The timing grid uses integer ticks scaled to represent the supported tuplet denominators exactly (actual counts up to nine), so no floating-point rounding is used for bar filling.
+The timing grid uses integer ticks scaled to represent the supported tuplet denominators exactly (actual counts up to twelve), so no floating-point rounding is used for bar filling.
 
 ### Example: one half note and two quarter notes in 4/4
 
@@ -156,7 +156,7 @@ This is a bounded depth-first search, not a database containing every possible r
 - If both are false, the search completed and all matches for that query were examined.
 - Exact multiset queries such as `exact=note@2:1,note@4:2` are especially efficient because the engine only explores the specified event inventory.
 
-The search engine currently supports normal notes/rests, single-dotted notes/rests, and triplet groups. Double/triple dots, quintuplets, septuplets, ties, accents, and notation engraving are not implemented yet.
+The search engine currently supports normal notes/rests, single-dotted notes/rests, and tuplet groups from 3 to 12 slots. Double/triple dots, ties, accents, and notation engraving are not implemented yet.
 
 
 ## OMR Constraint Solver
@@ -195,6 +195,12 @@ with OMRConstraintClient("./omr_constraint_solver") as solver:
 ```
 
 The example resolves the last note to a quarter note because the other candidates do not fill the 4/4 measure. Candidate confidence only ranks valid solutions; it never overrides the exact duration constraint.
+
+A candidate may also be `{"duration": "none"}`: the Visual Engine is not sure the symbol exists at all (a duplicated or spurious notehead). It occupies no time; a solution that drops it reports `"present": false` for that event and suggests the `symbol_existence` check.
+
+Durations use the same exact integer grid as the rhythm search engine (27720 ticks per whole note times the maximum denominator), so tuplet durations such as `1/5`, `1/7` or `1/11` are represented exactly.
+
+When no assignment fills the measure, the result says why: `gap` is `missing` (even the longest candidates leave `gap_whole` unfilled: a symbol was probably missed), `excess` (even the shortest candidates overflow by `gap_whole`: a spurious symbol or a missed barline), or `no_exact_combination`. `min_total_whole` and `max_total_whole` are always reported.
 
 Statuses:
 
