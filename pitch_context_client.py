@@ -229,7 +229,7 @@ class PitchContextClient:
                 raise RuntimeError("Pitch context engine process has stopped.")
             assert self._process.stdin is not None
             assert self._process.stdout is not None
-            self._process.stdin.write(command + "\\n")
+            self._process.stdin.write(command + "\n")
             self._process.stdin.flush()
             line = self._process.stdout.readline()
             if not line:
