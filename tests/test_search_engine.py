@@ -1,4 +1,4 @@
-"""Small integration suite for the C++ rhythm search engine."""
+"""Small integration suite for the C++ search engine."""
 
 from __future__ import annotations
 
@@ -11,19 +11,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from rhythm_search_client import RhythmSearchClient  # noqa: E402
+from search_engine_client import SearchEngineClient  # noqa: E402
 
 
 class RhythmSearchEngineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temp_dir = tempfile.TemporaryDirectory()
-        cls.executable = Path(cls.temp_dir.name) / "rhythm_search_engine"
+        cls.executable = Path(cls.temp_dir.name) / "search_engine"
         compiler = os.environ.get("CXX", "clang++")
         if subprocess.run(["which", compiler], capture_output=True).returncode != 0:
             compiler = "g++"
         subprocess.run(
-            [compiler, "-std=c++17", "-O2", str(ROOT / "rhythm_search_engine.cpp"), "-o", str(cls.executable)],
+            [compiler, "-std=c++17", "-O2", str(ROOT / "search_engine.cpp"), "-o", str(cls.executable)],
             check=True,
         )
 
@@ -32,7 +32,7 @@ class RhythmSearchEngineTests(unittest.TestCase):
         cls.temp_dir.cleanup()
 
     def setUp(self) -> None:
-        self.engine = RhythmSearchClient(self.executable, 4, 4, 16)
+        self.engine = SearchEngineClient(self.executable, 4, 4, 16)
 
     def tearDown(self) -> None:
         self.engine.close()
@@ -105,13 +105,13 @@ class RhythmSearchEngineTests(unittest.TestCase):
         self.assertEqual(len(result["patterns"]), 1)
 
     def test_full_measure_rest_for_three_four(self) -> None:
-        with RhythmSearchClient(self.executable, 3, 4, 16) as engine:
+        with SearchEngineClient(self.executable, 3, 4, 16) as engine:
             result = engine.search("RESTS", exact={"measure_rest@0": 1}, limit=5)
             self.assertEqual(len(result["patterns"]), 1)
             self.assertEqual(result["patterns"][0]["events"][0]["kind"], "measure_rest")
 
     def test_maximum_subdivision_256th_notes(self) -> None:
-        with RhythmSearchClient(self.executable, 4, 4, 256) as engine:
+        with SearchEngineClient(self.executable, 4, 4, 256) as engine:
             result = engine.search("NOTES", exact={"note@256": 256}, limit=1, max_nodes=10000)
             self.assertEqual(len(result["patterns"]), 1)
             self.assertEqual(result["patterns"][0]["event_count"], 256)
@@ -135,7 +135,7 @@ class RhythmSearchEngineTests(unittest.TestCase):
         self.assertEqual(result["patterns"][0]["summary"]["tuplet_groups"], 1)
 
     def test_quadrupet_ratio_four_to_three_in_three_four(self) -> None:
-        with RhythmSearchClient(self.executable, 3, 4, 16) as engine:
+        with SearchEngineClient(self.executable, 3, 4, 16) as engine:
             result = engine.search(
                 "NOTES",
                 exact={"tuplet@4:4:3": 1},
@@ -185,7 +185,7 @@ class RhythmSearchEngineTests(unittest.TestCase):
         self.assertEqual(len(event["tuplet_slots"]), 9)
 
     def test_uncommon_ratio_is_generated_on_demand(self) -> None:
-        with RhythmSearchClient(self.executable, 3, 4, 16) as engine:
+        with SearchEngineClient(self.executable, 3, 4, 16) as engine:
             result = engine.search(
                 "NOTES",
                 exact={"tuplet@4:5:3": 1},
@@ -198,7 +198,7 @@ class RhythmSearchEngineTests(unittest.TestCase):
         self.assertEqual(event["tuplet_slot_duration_whole"], "3/20")
 
     def test_uncommon_ratio_can_be_requested_by_tuplet_pattern_alone(self) -> None:
-        with RhythmSearchClient(self.executable, 3, 4, 16) as engine:
+        with SearchEngineClient(self.executable, 3, 4, 16) as engine:
             result = engine.search(
                 "RESTS",
                 exact={"tuplet@4:5:3": 1},
@@ -264,7 +264,7 @@ class RhythmSearchEngineTests(unittest.TestCase):
             self.assertEqual(event["triplet_slots"], ["note", "rest", "note"])
 
     def test_contains_kmp_handles_overlapping_prefixes(self) -> None:
-        with RhythmSearchClient(self.executable, 4, 4, 16) as engine:
+        with SearchEngineClient(self.executable, 4, 4, 16) as engine:
             result = engine.search(
                 "NOTES",
                 exact={"note@8": 6, "note@4": 1},

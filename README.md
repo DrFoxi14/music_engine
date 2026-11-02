@@ -5,9 +5,9 @@ A C++17 toolkit for exact rhythmic pattern generation, enumeration, and filtered
 ## Components
 
 - `math_engine.cpp` — compact dynamic-programming index for counting and retrieving rhythmic patterns by index, with separate note-only and at-least-one-rest categories.
-- `rhythm_search_engine.cpp` — bounded, filter-driven search and lazy pattern generation.
+- `search_engine.cpp` — bounded, filter-driven search and lazy pattern generation.
 - `math_engine_client.py` — Python client for Math Engine's counting and indexed retrieval API.
-- `rhythm_search_client.py` — Python client for filtered search and generation.
+- `search_engine_client.py` — Python client for filtered search and generation.
 
 The engines keep their working indexes and event tables in process memory. They do not materialize the full combinatorial pattern space or write a giant TXT file.
 
@@ -38,7 +38,7 @@ Using Apple Clang:
 
 ```bash
 clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic math_engine.cpp -o math_engine
-clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic rhythm_search_engine.cpp -o rhythm_search_engine
+clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic search_engine.cpp -o search_engine
 ```
 
 Or with CMake:
@@ -51,16 +51,20 @@ cmake --build build -j
 Start the search process for 4/4 with note values down to 1/256:
 
 ```bash
-./rhythm_search_engine 4 4 256
+./search_engine 4 4 256
 ```
 
 Arguments are:
 
 ```
-rhythm_search_engine <numerator> <denominator> <maximum_note_denominator>
+search_engine <numerator> <denominator> <maximum_note_denominator>
 ```
 
 The maximum note denominator is a power of two from 2 through 256.
+
+## Search Engine
+
+`search_engine.cpp` is the filtered rhythm-search interface intended for clients such as the Visual Engine. It searches for patterns matching constraints and returns matching results; Vision does not need to call `math_engine` for ordinary filtered rhythm queries. The two C++ programs are currently independent: Search Engine does not invoke Math Engine internally. Math Engine remains useful for total counts and indexed enumeration.
 
 ## Search and generation protocol
 
@@ -152,9 +156,9 @@ SEARCH RESTS exact=triplet@8:1,note@2:1,note@4:1 triplet_patterns=NRN limit=20
 ## Python client
 
 ```python
-from rhythm_search_client import RhythmSearchClient
+from search_engine_client import SearchEngineClient
 
-with RhythmSearchClient("./rhythm_search_engine", 4, 4, 256) as engine:
+with SearchEngineClient("./search_engine", 4, 4, 256) as engine:
     result = engine.search(
         "NOTES",
         exact={"note@2": 1, "note@4": 2},

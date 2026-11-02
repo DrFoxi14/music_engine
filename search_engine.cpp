@@ -20,8 +20,8 @@
  * Search is bounded: it enumerates matching patterns lazily and never stores
  * the complete combinatorial result set. Every result is emitted as JSONL.
  *
- * Build: clang++ -std=c++17 -O3 -DNDEBUG rhythm_search_engine.cpp -o rhythm_search_engine
- * Run:   ./rhythm_search_engine 4 4 256
+ * Build: clang++ -std=c++17 -O3 -DNDEBUG search_engine.cpp -o search_engine
+ * Run:   ./search_engine 4 4 256
  *
  * Commands:
  *   HELP
