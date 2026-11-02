@@ -54,7 +54,7 @@ EXIT
 ```
 
 - `NOTES` — patterns containing only notes.
-- `RESTS` — patterns containing at least one rest, including rests inside triplet groups.
+- `RESTS` — patterns containing at least one rest, including rests inside tuplet groups.
 - `SEARCH` and `GENERATE` currently use the same lazy generation pipeline.
 - The final `search_summary` reports results returned, nodes visited, whether the node budget truncated the search, and whether more matching patterns exist.
 - Search does not store every possible pattern. It walks the candidate space and emits only matches.
@@ -66,12 +66,15 @@ All filters are optional unless noted.
 | Filter | Meaning | Example |
 |---|---|---|
 | `exact` | Exact multiset of event descriptors; returns all distinct orderings | `exact=note@2:1,note@4:2` |
-| `kinds` | Allowed event kinds | `kinds=note,dotted_note,triplet` |
+| `kinds` | Allowed event kinds | `kinds=note,dotted_note,triplet,tuplet` |
 | `denominators` / `subdivisions` | Base note denominators allowed | `subdivisions=4,8,16` |
 | `durations` | Actual event durations, expressed as fractions of a whole note | `durations=1/4,3/8,1/8` |
 | `triplet_patterns` | Triplet slots, left to right: N = note, R = rest | `triplet_patterns=NNN,NRN,RNN` |
+| `tuplet_ratios` | Restrict generic tuplet actual:normal ratios | `tuplet_ratios=4:3,5:4,6:4,7:4,9:8` |
+| `tuplet_patterns` | Restrict generic tuplet slots using actual:normal:pattern | `tuplet_patterns=5:4:NNRNN,7:4:NNRNNRN` |
 | `min_events`, `max_events` | Minimum / maximum number of event groups | `min_events=3 max_events=8` |
 | `min_triplets`, `max_triplets` | Bounds on triplet groups | `min_triplets=1 max_triplets=2` |
+| `tuplet_ratios` | Restrict tuplets by actual:normal ratio | `tuplet_ratios=5:4,7:4` |
 | `min_dotted`, `max_dotted` | Bounds on dotted note/rest events | `min_dotted=1 max_dotted=2` |
 | `min_rest_slots`, `max_rest_slots` | Bounds on rests, including rests inside triplets | `min_rest_slots=1 max_rest_slots=3` |
 | `min_note_slots`, `max_note_slots` | Bounds on noteheads, including triplet slots | `min_note_slots=3 max_note_slots=8` |
@@ -85,16 +88,22 @@ All filters are optional unless noted.
 
 ### Descriptor syntax
 
-An event descriptor is `kind@denominator`:
+An event descriptor is usually `kind@denominator`:
 
 - `note@2` — half note.
 - `note@4` — quarter note.
 - `dotted_note@4` — dotted quarter note (actual duration `3/8` of a whole note).
 - `rest@8` — eighth rest.
-- `triplet@8` — one group of three eighth-note triplet slots spanning `1/4` of a whole note.
+- `triplet@8` — legacy spelling for three eighth-note triplet slots spanning `1/4` of a whole note.
+- `tuplet@4:5:4` — five quarter-note slots in the time normally occupied by four quarter notes; the group spans one whole note.
+- `tuplet@8:9:8` — nine eighth-note slots in the time normally occupied by eight eighth notes.
 - `measure_rest@0` — full-measure rest, used when the bar length is not one whole note.
 
-For a triplet, the JSON result also exposes the three slots and their individual duration. For example, `NRN` means note–rest–note. The `durations` filter applies to the whole event group; the triplet slot duration is returned separately.
+The engine currently generates these standard actual:normal ratios: `3:2`, `4:3`, `5:4`, `6:4`, `7:4`, and `9:8`. The old `triplet@denominator` and `triplet_patterns` interface remains supported. Generic tuplet descriptors include the ratio so different group sizes never collide in exact filters or ordered sequence matching.
+
+For generic tuplets, the JSON result exposes the ratio, every note/rest slot, and each slot's exact duration. For example, `5:4:NNRNN` means note–note–rest–note–note in a five-slot group. The `durations` filter applies to the entire tuplet group; slot duration is returned separately.
+
+The timing grid uses integer ticks scaled to represent the supported tuplet denominators exactly (actual counts up to nine), so no floating-point rounding is used for bar filling.
 
 ### Example: one half note and two quarter notes in 4/4
 
