@@ -104,6 +104,19 @@ class RhythmSearchEngineTests(unittest.TestCase):
         result = self.engine.search("RESTS", exact={"rest@1": 1}, limit=5)
         self.assertEqual(len(result["patterns"]), 1)
 
+    def test_full_measure_rest_for_three_four(self) -> None:
+        with RhythmSearchClient(self.executable, 3, 4, 16) as engine:
+            result = engine.search("RESTS", exact={"measure_rest@0": 1}, limit=5)
+            self.assertEqual(len(result["patterns"]), 1)
+            self.assertEqual(result["patterns"][0]["events"][0]["kind"], "measure_rest")
+
+    def test_maximum_subdivision_256th_notes(self) -> None:
+        with RhythmSearchClient(self.executable, 4, 4, 256) as engine:
+            result = engine.search("NOTES", exact={"note@256": 256}, limit=1, max_nodes=10000)
+            self.assertEqual(len(result["patterns"]), 1)
+            self.assertEqual(result["patterns"][0]["event_count"], 256)
+            self.assertEqual(result["patterns"][0]["events"][0]["duration_whole"], "1/256")
+
 
 if __name__ == "__main__":
     unittest.main()
