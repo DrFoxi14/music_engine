@@ -236,7 +236,7 @@ class RhythmSearchEngineTests(unittest.TestCase):
     def test_legacy_triplet_descriptor_and_pattern_remain_compatible(self) -> None:
         result = self.engine.search(
             "RESTS",
-            exact={"triplet@8": 1, "note@2": 1},
+            exact={"triplet@8": 1, "note@2": 1, "note@4": 1},
             kinds=["triplet", "note"],
             triplet_patterns=["NRN"],
             limit=20,
