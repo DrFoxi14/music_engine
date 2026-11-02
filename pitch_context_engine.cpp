@@ -466,6 +466,12 @@ StemCheck checkStem(const StemInput& stem, const std::vector<NoteInput>& notes,
     StemCheck result;
     result.stem = &stem;
     result.notes = noteIndices;
+    for (size_t index : noteIndices) {
+        if (!notes[index].chordId.empty() && notes[index].chordId != stem.chordId) {
+            result.status = "chord_group_mismatch";
+            return result;
+        }
+    }
     if (noteIndices.empty()) {
         result.status = "orphan_stem";
         return result;
@@ -550,12 +556,22 @@ public:
 
         std::vector<std::vector<size_t>> chordStemNoteIndices(stems.size());
         std::map<std::string, std::vector<size_t>> notesByChord;
+        std::vector<size_t> missingStemNotes;
+        std::vector<std::string> multipleStemChords;
         for (size_t i = 0; i < notes.size(); ++i) {
             if (!notes[i].chordId.empty()) notesByChord[notes[i].chordId].push_back(i);
             if (!notes[i].stemId.empty()) {
                 auto it = stemIndex.find(notes[i].stemId);
                 if (it != stemIndex.end()) chordStemNoteIndices[it->second].push_back(i);
+                else missingStemNotes.push_back(i);
             }
+        }
+        for (const auto& chord : notesByChord) {
+            std::set<std::string> chordStemIds;
+            for (size_t noteIndex : chord.second) {
+                if (!notes[noteIndex].stemId.empty()) chordStemIds.insert(notes[noteIndex].stemId);
+            }
+            if (chordStemIds.size() > 1) multipleStemChords.push_back(chord.first);
         }
 
         std::unordered_map<size_t, std::vector<size_t>> attachedAccidentals;
@@ -644,10 +660,13 @@ public:
         for (const auto& p : positions) if (!p.onGrid) reviewRequired = true;
         for (const auto& a : associations) if (a.status != "associated") reviewRequired = true;
         for (const auto& s : stemChecks)
-            if (s.status == "needs_visual_review" || s.status == "orphan_stem") reviewRequired = true;
+            if (s.status == "needs_visual_review" || s.status == "orphan_stem" ||
+                s.status == "chord_group_mismatch") reviewRequired = true;
+        if (!missingStemNotes.empty() || !multipleStemChords.empty()) reviewRequired = true;
 
         emitJson(cfg, key, notes, accidentals, stems, positions, associations,
-                 stemChecks, resolvedAlteration, alterationCertain, alterationSource,
+                 stemChecks, missingStemNotes, multipleStemChords,
+                 resolvedAlteration, alterationCertain, alterationSource,
                  attachedAccidentals, ambiguousAccidentals, reviewRequired);
     }
 
@@ -659,6 +678,8 @@ private:
                   const std::vector<PitchPosition>& positions,
                   const std::vector<Association>& associations,
                   const std::vector<StemCheck>& stemChecks,
+                  const std::vector<size_t>& missingStemNotes,
+                  const std::vector<std::string>& multipleStemChords,
                   const std::vector<int>& alterations,
                   const std::vector<bool>& alterationCertain,
                   const std::vector<std::string>& alterationSource,
@@ -785,6 +806,26 @@ private:
             out << '}';
         }
 
+        out << "],\"chord_stem_checks\":[";
+        bool firstStemChord = true;
+        for (const auto& chord : chordGroups) {
+            if (!firstStemChord) out << ',';
+            firstStemChord = false;
+            std::set<std::string> stemIds;
+            for (size_t noteIndex : chord.second) {
+                if (!notes[noteIndex].stemId.empty()) stemIds.insert(notes[noteIndex].stemId);
+            }
+            out << "{\"chord_id\":\"" << jsonEscape(chord.first)
+                << "\",\"note_count\":" << chord.second.size()
+                << ",\"stem_ids\":[";
+            size_t stemNumber = 0;
+            for (const auto& stemId : stemIds) {
+                if (stemNumber++) out << ',';
+                out << '"' << jsonEscape(stemId) << '"';
+            }
+            out << "],\"status\":\"" << (stemIds.size() > 1 ? "multiple_stems_needs_review" :
+                (stemIds.size() == 1 ? "one_shared_stem" : "stem_not_supplied")) << "\"}";
+        }
         out << "],\"chord_diagnostics\":[";
         bool firstChord = true;
         for (const auto& group : chordGroups) {
@@ -840,8 +881,22 @@ private:
                 << "\",\"reason\":\"notehead_off_staff_grid\",\"bbox\":" << boxJson(notes[i].box)
                 << ",\"requested_checks\":[\"notehead_center\",\"staff_line_geometry\",\"staff_skew\"]}";
         }
+        for (size_t noteIndex : missingStemNotes) {
+            if (!firstGuidance) out << ',';
+            firstGuidance = false;
+            out << "{\"target\":\"" << jsonEscape(notes[noteIndex].id)
+                << "\",\"reason\":\"missing_stem_reference\",\"bbox\":" << boxJson(notes[noteIndex].box)
+                << ",\"requested_checks\":[\"stem_detection\",\"stem_notehead_attachment\"]}";
+        }
+        for (const std::string& chordId : multipleStemChords) {
+            if (!firstGuidance) out << ',';
+            firstGuidance = false;
+            out << "{\"target\":\"" << jsonEscape(chordId)
+                << "\",\"reason\":\"chord_has_multiple_stem_ids\",\"requested_checks\":[\"shared_stem_grouping\",\"voice_separation\"]}";
+        }
         for (const auto& stem : stemChecks) {
-            if (stem.status != "needs_visual_review" && stem.status != "orphan_stem") continue;
+            if (stem.status != "needs_visual_review" && stem.status != "orphan_stem" &&
+                stem.status != "chord_group_mismatch") continue;
             if (!firstGuidance) out << ',';
             firstGuidance = false;
             out << "{\"target\":\"" << jsonEscape(stem.stem->id)
