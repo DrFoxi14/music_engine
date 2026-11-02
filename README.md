@@ -215,7 +215,8 @@ Capabilities:
 - Explicit `associated`, `ambiguous`, and `orphan` accidental outcomes.
 - Advisory chord interval diagnostics for semitone clusters and tritones, with optional visual-review regions; these never reject or rewrite notes.
 - Chord stem attachment checks using the actual attachment notehead: lower chord note for an up-stem, upper chord note for a down-stem.
-- Visual guidance bounding boxes for ambiguous accidentals, off-grid noteheads, and suspicious stem attachments.
+- Explicit cross-barline tie carry, scoped by staff, voice, and tie ID, including multi-measure tie chains.
+- Visual guidance bounding boxes for ambiguous accidentals, off-grid noteheads, suspicious stem attachments, and unresolved tie relationships.
 
 Build:
 
@@ -233,6 +234,7 @@ notes = [
         "id": "n1", "x": 200, "y": 120,
         "bbox": {"left": 190, "top": 115, "right": 210, "bottom": 125},
         "stem_id": "s1", "chord_id": "ch1",
+        "tie_id": "tie-1", "tie_from_previous": False, "tie_to_next": True,
     },
     {
         "id": "n2", "x": 200, "y": 110,
@@ -256,6 +258,8 @@ with PitchContextClient("./pitch_context_engine") as engine:
         line_spacing=10,
         key_signature="G",
         measure_id="bar-12",
+        staff_id="staff-1",
+        voice_id="soprano",
         notes=notes,
         accidentals=accidentals,
         stems=stems,
@@ -263,6 +267,25 @@ with PitchContextClient("./pitch_context_engine") as engine:
     print(result["notes"])
     print(result["accidental_associations"])
     print(result["visual_guidance"])
+
+    # Resolve the following measure in the SAME client/process.
+    next_measure = engine.resolve(
+        clef="treble",
+        staff_top_y=100,
+        line_spacing=10,
+        key_signature="G",
+        measure_id="bar-13",
+        staff_id="staff-1",
+        voice_id="soprano",
+        notes=[{
+            "id": "n3", "x": 200, "y": 120,
+            "tie_id": "tie-1", "tie_from_previous": True,
+        }],
+    )
+    print(next_measure["notes"][0]["alteration_source"])  # tie_carry
+
+    # Optional: clear pending ties when switching scores.
+    engine.reset_ties()
 ```
 
 ### Accidental-to-note assignment
@@ -276,9 +299,22 @@ Accidental association uses page geometry, not harmony as a hard rule. Candidate
 
 A new `resolve()` request represents a new measure and starts with an empty local accidental register. Within a measure, a uniquely assigned accidental affects subsequent occurrences of the same letter and octave. Key-signature defaults apply when no local accidental is active.
 
+### Cross-barline ties
+
+Tie state is a separate persistent register; it does not extend measure-local accidental memory. Keep the same `PitchContextClient` process alive while resolving consecutive measures of the same score. Identify each tie chain with a stable `tie_id` and pass the source note with `tie_to_next=True`, then the target note with `tie_from_previous=True`. Pass the same `staff_id` and `voice_id` for all measures in that part.
+
+- The source's fully resolved chromatic pitch is stored, including a local sharp, flat, or natural that overrides the key signature.
+- The target inherits that alteration only for its tied note. Other notes of the same letter/octave in the new measure still follow the new measure's accidental register and key signature.
+- A target must resolve to the same diatonic letter and octave as its source. A mismatch, missing source, duplicate tie ID, uncertain source pitch, or undetected target is reported for visual review.
+- A tie chain spanning multiple measures can use the same `tie_id`; an intermediate note can set both `tie_from_previous=True` and `tie_to_next=True`.
+- A cautionary accidental printed at the target is accepted only when it agrees with the carried pitch. A conflicting accidental never overrides the tie source; the source pitch is retained and the result is marked uncertain.
+- Use `engine.reset_ties()` when changing scores, or `engine.reset_ties(staff_id="staff-1", voice_id="soprano")` to clear one part.
+
+The engine keeps pending ties in memory for the life of its process. Restarting the process clears this state; persistent on-disk checkpointing is not implemented.
+
 ### Important scope and notation limits
 
-This is a geometry-and-pitch context module, not a complete notation interpreter. It currently models one staff/voice and one measure per request. It does not yet handle cross-barline ties, octave-transposing clefs/instruments, ottava lines, microtonal accidentals, historical key signatures, multi-staff grand-staff accidental policy, or full chord-voice separation.
+This is a geometry-and-pitch context module, not a complete notation interpreter. Each request models one staff/voice and one measure; consecutive requests can share explicit tie state. It does not yet handle octave-transposing clefs/instruments, ottava lines, microtonal accidentals, historical key signatures, multi-staff grand-staff accidental policy, or full chord-voice separation.
 
 Stem checks validate the stem's attachment to the appropriate chord anchor notehead. They do not require every notehead in a chord to touch the same stem: chord noteheads are commonly staggered around one shared stem.
 
