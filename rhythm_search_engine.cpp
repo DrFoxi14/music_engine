@@ -143,7 +143,7 @@ std::string descriptor(const std::string& raw) {
         if (den == 0 || den > 256 || !isPowerOfTwo(static_cast<int>(den)))
             throw std::invalid_argument("tuplet denominator must be a power of two <= 256");
         if (actual < 3 || actual > 12 || normal < 1 || normal > 16)
-            throw std::invalid_argument("tuplet counts must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
+            throw std::invalid_argument("tuplet counts must satisfy 3 <= actual <= 12 and 1 <= normal <= 16");
         if (actual == 3 && normal == 2)
             return "triplet@" + std::to_string(den); // Generic 3:2 spelling aliases to legacy triplet.
         return "tuplet@" + std::to_string(den) + ":" + std::to_string(actual) + ":" + std::to_string(normal);
@@ -183,6 +183,9 @@ struct Filter {
     std::set<std::string> tripletPatterns;
     std::set<std::string> tupletPatterns;
     std::set<std::string> tupletRatios;
+    // Ratios inferred from exact/sequence descriptors. They only make the engine
+    // generate those tuplet candidates; unlike tupletRatios they never filter.
+    std::set<std::string> generatedRatios;
     std::set<std::string> kinds;
     std::set<int> denominators;
     std::map<std::string, int> exact;
@@ -306,7 +309,7 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
             const uint64_t actual = parseU64(parts[0], "tuplet actual count");
             const uint64_t normal = parseU64(parts[1], "tuplet normal count");
             if (actual < 3 || actual > 12 || normal < 1 || normal > 16)
-                throw std::invalid_argument("tuplet ratio must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
+                throw std::invalid_argument("tuplet ratio must satisfy 3 <= actual <= 12 and 1 <= normal <= 16");
             f.tupletRatios.insert(std::to_string(actual) + ":" + std::to_string(normal));
         }
     }
@@ -349,7 +352,7 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
         if (value.rfind("tuplet@", 0) != 0) return;
         const auto fields = split(value.substr(value.find('@') + 1), ':');
         if (fields.size() == 3)
-            f.tupletRatios.insert(fields[1] + ":" + fields[2]);
+            f.generatedRatios.insert(fields[1] + ":" + fields[2]);
     };
     for (const auto& item : f.exact) registerDescriptorRatio(item.first);
     registerDescriptorRatio(f.first);
@@ -407,8 +410,11 @@ public:
                                         std::to_string(event.normalCount));
             }
         }
-        for (const auto& ratio : filter.tupletRatios) {
+        std::set<std::string> wanted = filter.tupletRatios;
+        wanted.insert(filter.generatedRatios.begin(), filter.generatedRatios.end());
+        for (const auto& ratio : wanted) {
             if (availableRatios.count(ratio)) continue;
+            availableRatios.insert(ratio);
             const auto parts = split(ratio, ':');
             const int actual = static_cast<int>(parseU64(parts.at(0), "tuplet actual count"));
             const int normal = static_cast<int>(parseU64(parts.at(1), "tuplet normal count"));

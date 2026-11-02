@@ -904,6 +904,7 @@ private:
                   const std::unordered_map<size_t, std::vector<size_t>>& ambiguous,
                   bool reviewRequired) const {
         (void)key;
+        (void)stems;
         struct ChordFlag {
             std::string chordId;
             size_t noteA;
