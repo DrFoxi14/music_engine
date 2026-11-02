@@ -1,0 +1,17 @@
+# Build outputs
+/build/
+/ritmuri_engine
+*.o
+*.a
+*.dylib
+*.so
+*.dll
+*.exe
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# macOS
+.DS_Store
