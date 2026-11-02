@@ -442,7 +442,6 @@ private:
                     out.push_back(std::move(event));
                 }
             }
-            }
             if (d > maxDenominator_ / 2) break;
         }
     }
