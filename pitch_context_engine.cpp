@@ -466,6 +466,28 @@ Association associateAccidental(size_t accidentalIndex, const StaffConfig& cfg,
         if (std::isfinite(cost)) result.candidates.push_back({i, cost});
     }
 
+    // An accidental is engraved right before its note: a candidate further right on (nearly) the same
+    // staff position is blocked by a nearer candidate there; that later note is in the accidental's
+    // measure-local scope, not its owner. (Without this, a flat 4 px from its note and the same pitch
+    // 38 px further were "ambiguous", and neither note got the flat.)
+    auto gapOf = [&](size_t i) {
+        return (notes[i].box.valid ? notes[i].box.left : notes[i].x) - accidental.box.right;
+    };
+    auto rowOf = [&](size_t i) { return std::abs(notes[i].y - accidental.verticalAnchor()); };
+    std::vector<AssociationCandidate> unblocked;
+    for (const auto& c : result.candidates) {
+        bool blocked = false;
+        for (const auto& o : result.candidates) {
+            if (o.noteIndex != c.noteIndex && gapOf(o.noteIndex) + 0.5 * cfg.spacing < gapOf(c.noteIndex) &&
+                rowOf(o.noteIndex) <= rowOf(c.noteIndex) + 0.25 * cfg.spacing) {
+                blocked = true;
+                break;
+            }
+        }
+        if (!blocked) unblocked.push_back(c);
+    }
+    result.candidates = std::move(unblocked);
+
     std::stable_sort(result.candidates.begin(), result.candidates.end(),
         [](const AssociationCandidate& a, const AssociationCandidate& b) {
             return a.cost < b.cost;

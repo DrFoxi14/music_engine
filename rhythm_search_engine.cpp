@@ -461,8 +461,9 @@ private:
                     notes += isNote ? 1 : 0;
                 }
                 const int rests = actual - notes;
+                // A RESTS pattern needs at least one rest somewhere (min_rest_slots), not in every
+                // tuplet: an all-note triplet next to a rest is an ordinary measure.
                 if (!includeRests && rests > 0) continue;
-                if (includeRests && rests == 0) continue;
                 if (!requestedMasks.empty() && !requestedMasks.count(maskText)) continue;
 
                 std::ostringstream label;
@@ -518,7 +519,6 @@ private:
                         notes += isNote ? 1 : 0;
                     }
                     const int rests = actual - notes;
-                    if (includeRests && rests == 0) continue;
                     std::ostringstream label;
                     const bool isTriplet = actual == 3 && normal == 2;
                     if (isTriplet) label << "triplet(";
