@@ -149,8 +149,12 @@ class PitchContextClient:
             seen_accidental_ids.add(accidental_id)
             kind = self._safe_id(accidental["kind"], "accidental kind")
             box = self._bbox_fields(accidental.get("bbox"), required=True)
+            anchor_y = (
+                self._number(accidental["anchor_y"], "accidental.anchor_y")
+                if accidental.get("anchor_y") is not None else "-"
+            )
             fields = [
-                accidental_id, kind, box[0], box[2], box[1], box[3],
+                accidental_id, kind, box[0], box[2], box[1], box[3], anchor_y,
                 self._number(accidental.get("confidence", 1.0), "accidental.confidence"),
             ]
             tokens.append("accidental=" + ",".join(fields))
