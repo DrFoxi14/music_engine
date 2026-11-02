@@ -621,8 +621,18 @@ private:
             if (!f_.durations.empty() && !f_.durations.count(reducedFraction(event.durationNum,event.durationDen))) return false;
             if (event.kind == "triplet" && !f_.tripletPatterns.empty()) {
                 std::string mask;
-                for (bool slot : event.tripletSlots) mask += slot ? 'N' : 'R';
+                for (bool slot : event.tupletSlots) mask += slot ? 'N' : 'R';
                 if (!f_.tripletPatterns.count(mask)) return false;
+            }
+            if (event.kind == "tuplet" || event.kind == "triplet") {
+                const std::string ratio = std::to_string(event.actualCount) + ":" +
+                                          std::to_string(event.normalCount);
+                if (!f_.tupletRatios.empty() && !f_.tupletRatios.count(ratio)) return false;
+                if (event.kind == "tuplet" && !f_.tupletPatterns.empty()) {
+                    std::string mask;
+                    for (bool slot : event.tupletSlots) mask += slot ? 'N' : 'R';
+                    if (!f_.tupletPatterns.count(ratio + ":" + mask)) return false;
+                }
             }
             if (!f_.exact.empty()) {
                 auto it = remainingExact_.find(event.key());
@@ -655,31 +665,43 @@ private:
                 << "\",\"meter\":\"" << e_.numerator_ << '/' << e_.denominator_
                 << "\",\"total_ticks\":" << e_.targetTicks_ << ",\"event_count\":" << chosen_.size()
                 << ",\"events\":[";
-            int notes=0, rests=0, triplets=0, dotted=0;
+            int notes=0, rests=0, triplets=0, tuplets=0, dotted=0;
             for (size_t i=0;i<chosen_.size();++i) {
                 const Event& x = *chosen_[i];
                 if (i) out << ',';
                 notes += x.noteSlots; rests += x.restSlots;
                 triplets += x.kind == "triplet";
+                tuplets += x.kind == "triplet" || x.kind == "tuplet";
                 dotted += x.kind == "dotted_note" || x.kind == "dotted_rest";
                 out << "{\"kind\":\"" << x.kind << "\",\"descriptor\":\"" << x.key()
                     << "\",\"base_denominator\":" << x.denominator
                     << ",\"duration_ticks\":" << x.ticks
                     << ",\"duration_whole\":\"" << reducedFraction(x.durationNum,x.durationDen)
                     << "\",\"note_slots\":" << x.noteSlots << ",\"rest_slots\":" << x.restSlots;
-                if (x.kind == "triplet") {
-                    out << ",\"triplet_slots\":[";
-                    for (int j=0;j<3;++j) {
+                if (x.kind == "triplet" || x.kind == "tuplet") {
+                    out << ",\"tuplet_ratio\":\"" << x.actualCount << ":" << x.normalCount << "\"";
+                    out << ",\"tuplet_slots\":[";
+                    for (size_t j=0;j<x.tupletSlots.size();++j) {
                         if (j) out << ',';
-                        out << '"' << (x.tripletSlots[j] ? "note" : "rest") << '"';
+                        out << '"' << (x.tupletSlots[j] ? "note" : "rest") << '"';
                     }
-                    out << "],\"triplet_slot_duration_whole\":\""
-                        << reducedFraction(2,3*x.denominator) << '"';
+                    out << "],\"tuplet_slot_duration_whole\":\""
+                        << reducedFraction(x.normalCount, x.actualCount*x.denominator) << "\"";
+                    if (x.kind == "triplet") {
+                        out << ",\"triplet_slots\":[";
+                        for (size_t j=0;j<x.tupletSlots.size();++j) {
+                            if (j) out << ',';
+                            out << '"' << (x.tupletSlots[j] ? "note" : "rest") << '"';
+                        }
+                        out << "],\"triplet_slot_duration_whole\":\""
+                            << reducedFraction(x.normalCount, x.actualCount*x.denominator) << "\"";
+                    }
                 }
                 out << ",\"label\":\"" << jsonEscape(x.label) << "\"}";
             }
             out << "],\"summary\":{\"note_slots\":" << notes << ",\"rest_slots\":" << rests
-                << ",\"triplet_groups\":" << triplets << ",\"dotted_events\":" << dotted << "}}";
+                << ",\"triplet_groups\":" << triplets << ",\"tuplet_groups\":" << tuplets
+                << ",\"dotted_events\":" << dotted << "}}";
             return out.str();
         }
 
