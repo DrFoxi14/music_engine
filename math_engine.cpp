@@ -13,7 +13,7 @@
 #include <vector>
 
 /*
-  RITMURI ENGINE — C++17
+  MATH ENGINE — C++17
 
   Does not store all rhythm patterns. It builds a compact dynamic-programming
   index in memory and supports:
@@ -25,10 +25,10 @@
   bot can communicate with it without restarting the engine for each query.
 
   Build:
-    clang++ -std=c++17 -O3 -DNDEBUG ritmuri_engine.cpp -o ritmuri_engine
+    clang++ -std=c++17 -O3 -DNDEBUG math_engine.cpp -o math_engine
 
   Run:
-    ./ritmuri_engine 4 4 256
+    ./math_engine 4 4 256
 */
 
 namespace {

@@ -4,19 +4,40 @@ A C++17 toolkit for exact rhythmic pattern generation, enumeration, and filtered
 
 ## Components
 
-- `ritmuri_engine.cpp` — compact dynamic-programming index for counting and retrieving patterns by index.
+- `math_engine.cpp` — compact dynamic-programming index for counting and retrieving rhythmic patterns by index, with separate note-only and at-least-one-rest categories.
 - `rhythm_search_engine.cpp` — bounded, filter-driven search and lazy pattern generation.
-- `ritmuri_client.py` — Python client for the original index engine.
+- `math_engine_client.py` — Python client for Math Engine's counting and indexed retrieval API.
 - `rhythm_search_client.py` — Python client for filtered search and generation.
 
 The engines keep their working indexes and event tables in process memory. They do not materialize the full combinatorial pattern space or write a giant TXT file.
+
+## Math Engine
+
+Math Engine counts the total number of valid rhythmic patterns for a selected meter and note-resolution limit. It can retrieve a specific pattern by index or return a page of patterns. `NOTES` contains patterns with no rests; `RESTS` contains patterns with at least one rest (and may also contain notes). It is an enumerator/index, not the filtered search engine.
+
+Build it directly with:
+
+```bash
+clang++ -std=c++17 -O3 -DNDEBUG math_engine.cpp -o math_engine
+```
+
+Python example:
+
+```python
+from math_engine_client import MathEngineClient
+
+with MathEngineClient("./math_engine", 4, 4, 256) as engine:
+    print("Note-only patterns:", engine.count("NOTES"))
+    print("First pattern:", engine.get(0, "NOTES"))
+    print("First patterns containing rests:", engine.page(0, 3, "RESTS"))
+```
 
 ## Build on macOS / Apple Silicon
 
 Using Apple Clang:
 
 ```bash
-clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic ritmuri_engine.cpp -o ritmuri_engine
+clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic math_engine.cpp -o math_engine
 clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic rhythm_search_engine.cpp -o rhythm_search_engine
 ```
 

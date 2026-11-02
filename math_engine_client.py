@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-class RhythmEngineClient:
+class MathEngineClient:
     """Synchronous, thread-safe client for one running rhythm-engine process."""
 
     def __init__(
@@ -143,18 +143,22 @@ class RhythmEngineClient:
             if process.poll() is None:
                 process.kill()
 
-    def __enter__(self) -> "RhythmEngineClient":
+    def __enter__(self) -> "MathEngineClient":
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
 
 
+# Backward-compatible alias for existing scripts.
+RhythmEngineClient = MathEngineClient
+
+
 if __name__ == "__main__":
     import sys
 
-    executable = sys.argv[1] if len(sys.argv) > 1 else "./ritmuri_engine"
-    with RhythmEngineClient(executable, 4, 4, 256) as engine:
+    executable = sys.argv[1] if len(sys.argv) > 1 else "./math_engine"
+    with MathEngineClient(executable, 4, 4, 256) as engine:
         print("Engine:", engine.info)
         print("Note-only patterns:", engine.count("NOTES"))
         print("First note-only pattern:", engine.get(0, "NOTES"))
