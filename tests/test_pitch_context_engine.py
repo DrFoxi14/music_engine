@@ -105,6 +105,20 @@ class PitchContextEngineTests(unittest.TestCase):
         self.assertIn(1, result["notes"][0]["effective_alteration_options"])
         self.assertIn(0, result["notes"][0]["effective_alteration_options"])
 
+    def test_visual_anchor_y_overrides_bbox_center(self):
+        result = self.resolve(
+            [note("b4", 200, 120), note("a4", 200, 125)],
+            accidentals=[{
+                "id": "anchored_sharp", "kind": "sharp",
+                "bbox": {"left": 170, "top": 116, "right": 182, "bottom": 130},
+                "anchor_y": 120,
+            }],
+        )
+        association = result["accidental_associations"][0]
+        self.assertEqual(association["status"], "associated")
+        self.assertEqual(association["selected_note_id"], "b4")
+        self.assertEqual(association["anchor_source"], "visual_anchor")
+
     def test_accidental_assigned_when_vertical_margin_is_clear(self):
         result = self.resolve(
             [note("b4", 200, 120), note("a4", 200, 125)],
