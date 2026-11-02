@@ -1193,7 +1193,8 @@ void emitError(const std::string& message) {
 } // namespace
 
 int main() {
-    std::cout << "{\"type\":\"ready\",\"engine\":\"pitch_context_engine\",\"version\":1}\n" << std::flush;
+    PitchContextEngine engine;
+    std::cout << "{\"type\":\"ready\",\"engine\":\"pitch_context_engine\",\"version\":2}\n" << std::flush;
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line.empty()) continue;
@@ -1202,8 +1203,34 @@ int main() {
         input >> command;
         command = lower(command);
         if (command == "exit" || command == "quit") break;
+        if (command == "reset_ties") {
+            try {
+                std::map<std::string, std::string> resetValues;
+                std::string resetToken;
+                while (input >> resetToken) {
+                    const size_t equals = resetToken.find('=');
+                    if (equals == std::string::npos || equals == 0 || equals + 1 >= resetToken.size())
+                        throw std::invalid_argument("RESET_TIES arguments must use key=value syntax");
+                    const std::string key = lower(resetToken.substr(0, equals));
+                    if (key != "staff" && key != "voice")
+                        throw std::invalid_argument("RESET_TIES accepts only staff= and voice=");
+                    if (resetValues.count(key)) throw std::invalid_argument("duplicate RESET_TIES option: " + key);
+                    resetValues[key] = resetToken.substr(equals + 1);
+                }
+                const std::string staffId = resetValues.count("staff") ? resetValues["staff"] : "";
+                const std::string voiceId = resetValues.count("voice") ? resetValues["voice"] : "";
+                if (staffId.empty() != voiceId.empty())
+                    throw std::invalid_argument("RESET_TIES requires both staff= and voice=, or neither");
+                engine.resetTies(staffId, voiceId);
+                std::cout << "{\"type\":\"tie_state_reset\",\"staff_id\":\"" << jsonEscape(staffId)
+                          << "\",\"voice_id\":\"" << jsonEscape(voiceId) << "\"}\n" << std::flush;
+            } catch (const std::exception& error) {
+                emitError(error.what());
+            }
+            continue;
+        }
         if (command != "resolve") {
-            emitError("unknown command; use RESOLVE or EXIT");
+            emitError("unknown command; use RESOLVE, RESET_TIES or EXIT");
             continue;
         }
 
@@ -1230,7 +1257,6 @@ int main() {
             }
 
             StaffConfig cfg = parseConfig(values);
-            PitchContextEngine engine;
             engine.resolve(cfg, notes, accidentals, stems);
         } catch (const std::exception& error) {
             emitError(error.what());
