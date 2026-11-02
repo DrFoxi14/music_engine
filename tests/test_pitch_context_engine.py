@@ -102,6 +102,8 @@ class PitchContextEngineTests(unittest.TestCase):
         self.assertEqual({c["note_id"] for c in association["candidates"]}, {"b4", "a4"})
         self.assertEqual(result["status"], "review_required")
         self.assertIn("uncertain_sharp", result["notes"][0]["ambiguous_accidentals"])
+        self.assertIn(1, result["notes"][0]["effective_alteration_options"])
+        self.assertIn(0, result["notes"][0]["effective_alteration_options"])
 
     def test_accidental_assigned_when_vertical_margin_is_clear(self):
         result = self.resolve(
