@@ -154,6 +154,10 @@ struct AccidentalInput {
     std::string kind;
     Box box;
     double confidence = 1.0;
+    double anchorY = 0;
+    bool hasAnchorY = false;
+
+    double verticalAnchor() const { return hasAnchorY ? anchorY : box.centerY(); }
 };
 
 struct StemInput {
@@ -361,7 +365,7 @@ NoteInput parseNote(const std::string& value) {
 }
 
 AccidentalInput parseAccidental(const std::string& value) {
-    auto f = splitCsv(value, 7, "accidental");
+    auto f = splitCsv(value, 8, "accidental");
     AccidentalInput a;
     a.id = f[0];
     a.kind = lower(f[1]);
@@ -370,7 +374,11 @@ AccidentalInput parseAccidental(const std::string& value) {
                 parseDouble(f[4], "accidental bbox right"), parseDouble(f[5], "accidental bbox bottom"), true};
     if (a.box.right <= a.box.left || a.box.bottom <= a.box.top)
         throw std::invalid_argument("accidental bounding box has non-positive size");
-    a.confidence = parseDouble(f[6], "accidental confidence");
+    if (f[6] != "-") {
+        a.anchorY = parseDouble(f[6], "accidental anchor_y");
+        a.hasAnchorY = true;
+    }
+    a.confidence = parseDouble(f[7], "accidental confidence");
     if (a.confidence <= 0 || a.confidence > 1)
         throw std::invalid_argument("accidental confidence must be in (0,1]");
     return a;
@@ -397,7 +405,7 @@ double accidentalAssociationCost(const StaffConfig& cfg, const AccidentalInput& 
     const double maxGap = 5.0 * cfg.spacing;
     if (gap < -0.15 * cfg.spacing || gap > maxGap) return std::numeric_limits<double>::infinity();
 
-    const double verticalDistance = std::abs(note.y - accidental.box.centerY());
+    const double verticalDistance = std::abs(note.y - accidental.verticalAnchor());
     const double verticalAllowance = std::max(0.85 * cfg.spacing, 0.58 * accidental.box.height());
     if (verticalDistance > verticalAllowance) return std::numeric_limits<double>::infinity();
 
@@ -731,7 +739,9 @@ private:
             const auto& accidental = accidentals[association.accidentalIndex];
             out << "{\"accidental_id\":\"" << jsonEscape(accidental.id)
                 << "\",\"kind\":\"" << jsonEscape(accidental.kind)
-                << "\",\"status\":\"" << association.status << "\"";
+                << "\",\"status\":\"" << association.status
+                << "\",\"vertical_anchor_y\":" << accidental.verticalAnchor()
+                << ",\"anchor_source\":\"" << (accidental.hasAnchorY ? "visual_anchor" : "bbox_center") << "\"";
             if (association.selectedNote >= 0) {
                 out << ",\"selected_note_id\":\""
                     << jsonEscape(notes[static_cast<size_t>(association.selectedNote)].id) << '"';
