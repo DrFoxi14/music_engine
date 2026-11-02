@@ -696,7 +696,7 @@ private:
                 const std::string ratio = std::to_string(event.actualCount) + ":" +
                                           std::to_string(event.normalCount);
                 if (!f_.tupletRatios.empty() && !f_.tupletRatios.count(ratio)) return false;
-                if (event.kind == "tuplet" && !f_.tupletPatterns.empty()) {
+                if (!f_.tupletPatterns.empty()) {
                     std::string mask;
                     for (bool slot : event.tupletSlots) mask += slot ? 'N' : 'R';
                     if (!f_.tupletPatterns.count(ratio + ":" + mask)) return false;
