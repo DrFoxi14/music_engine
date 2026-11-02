@@ -424,6 +424,7 @@ private:
                     impossible_ = true;
             }
             if (allowed_.empty()) impossible_ = true;
+            buildContainsAutomaton();
         }
 
         void execute() {
@@ -458,6 +459,91 @@ private:
         uint64_t maxTicks_ = 0;
         std::vector<const Event*> chosen_;
 
+        // A precomputed KMP transition table makes each DFS push/pop transition
+        // O(1), rather than rescanning the current prefix at every terminal node.
+        std::map<std::string, size_t> containsSymbolIndex_;
+        std::vector<std::vector<size_t>> containsNext_;
+        std::vector<std::vector<unsigned char>> containsMatch_;
+        std::vector<size_t> containsStateStack_{0};
+        std::vector<unsigned char> containsMatchedStack_{0};
+
+        void buildContainsAutomaton() {
+            containsStateStack_.assign(1, 0);
+            containsMatchedStack_.assign(1, 0);
+            if (f_.contains.empty()) return;
+
+            for (const Event* event : allowed_) {
+                const std::string key = event->key();
+                if (!containsSymbolIndex_.count(key)) {
+                    containsSymbolIndex_[key] = containsSymbolIndex_.size();
+                }
+            }
+            for (const std::string& key : f_.contains) {
+                if (!containsSymbolIndex_.count(key)) {
+                    impossible_ = true;
+                    return;
+                }
+            }
+
+            const size_t m = f_.contains.size();
+            const size_t alphabetSize = containsSymbolIndex_.size();
+            std::vector<size_t> prefix(m, 0);
+            for (size_t i = 1, j = 0; i < m; ++i) {
+                while (j > 0 && f_.contains[i] != f_.contains[j]) j = prefix[j - 1];
+                if (f_.contains[i] == f_.contains[j]) ++j;
+                prefix[i] = j;
+            }
+
+            containsNext_.assign(m, std::vector<size_t>(alphabetSize, 0));
+            containsMatch_.assign(m, std::vector<unsigned char>(alphabetSize, 0));
+
+            // Build the deterministic KMP automaton from shorter prefix states.
+            for (size_t state = 0; state < m; ++state) {
+                for (const auto& symbol : containsSymbolIndex_) {
+                    const size_t symbolIndex = symbol.second;
+                    size_t nextState = 0;
+                    bool matched = false;
+
+                    if (f_.contains[state] == symbol.first) {
+                        nextState = state + 1;
+                        if (nextState == m) {
+                            matched = true;
+                            nextState = prefix[m - 1];
+                        }
+                    } else if (state > 0) {
+                        const size_t fallback = prefix[state - 1];
+                        nextState = containsNext_[fallback][symbolIndex];
+                        matched = containsMatch_[fallback][symbolIndex] != 0;
+                    }
+
+                    containsNext_[state][symbolIndex] = nextState;
+                    containsMatch_[state][symbolIndex] = matched ? 1 : 0;
+                }
+            }
+        }
+
+        void pushContainsState(const Event& event) {
+            if (f_.contains.empty()) {
+                containsStateStack_.push_back(0);
+                containsMatchedStack_.push_back(0);
+                return;
+            }
+
+            const size_t state = containsStateStack_.back();
+            const auto symbol = containsSymbolIndex_.find(event.key());
+            if (symbol == containsSymbolIndex_.end()) {
+                containsStateStack_.push_back(state);
+                containsMatchedStack_.push_back(containsMatchedStack_.back());
+                return;
+            }
+
+            const size_t index = symbol->second;
+            containsStateStack_.push_back(containsNext_[state][index]);
+            containsMatchedStack_.push_back(
+                (containsMatchedStack_.back() || containsMatch_[state][index]) ? 1 : 0
+            );
+        }
+
         bool eventAllowed(const Event& event) const {
             if (!f_.kinds.empty() && !f_.kinds.count(event.kind)) return false;
             if (!f_.denominators.empty() && !f_.denominators.count(event.denominator)) return false;
@@ -483,19 +569,6 @@ private:
             for (size_t i=0;i<seq.size();++i)
                 if (chosen_[start+i]->key() != seq[i]) return false;
             return true;
-        }
-
-        bool containsSequence() const {
-            if (f_.contains.empty()) return true;
-            if (f_.contains.size() > chosen_.size()) return false;
-            for (size_t start=0; start + f_.contains.size() <= chosen_.size(); ++start) {
-                bool match = true;
-                for (size_t j=0;j<f_.contains.size();++j) {
-                    if (chosen_[start+j]->key() != f_.contains[j]) { match = false; break; }
-                }
-                if (match) return true;
-            }
-            return false;
         }
 
         void emitMatch() {
@@ -569,7 +642,8 @@ private:
                     restSlots < f_.minRestSlots || restSlots > f_.maxRestSlots ||
                     noteSlots < f_.minNoteSlots || noteSlots > f_.maxNoteSlots) return;
                 if (!f_.last.empty() && (chosen_.empty() || chosen_.back()->key() != f_.last)) return;
-                if (!sequenceAtEnd(f_.prefix, false) || !sequenceAtEnd(f_.suffix, true) || !containsSequence()) return;
+                if (!sequenceAtEnd(f_.prefix, false) || !sequenceAtEnd(f_.suffix, true)) return;
+                if (!f_.contains.empty() && !containsMatchedStack_.back()) return;
                 if (!f_.exact.empty()) {
                     for (const auto& pair : remainingExact_) if (pair.second != 0) return;
                 }
@@ -593,12 +667,15 @@ private:
                 }
 
                 chosen_.push_back(event);
+                pushContainsState(*event);
                 dfs(remainingTicks - event->ticks,
                     triplets + (event->kind == "triplet"),
                     dotted + (event->kind == "dotted_note" || event->kind == "dotted_rest"),
                     restSlots + event->restSlots,
                     noteSlots + event->noteSlots,
                     depth + 1);
+                containsStateStack_.pop_back();
+                containsMatchedStack_.pop_back();
                 chosen_.pop_back();
 
                 if (!f_.exact.empty()) {
