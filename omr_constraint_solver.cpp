@@ -186,7 +186,7 @@ std::vector<std::string> suggestedChecks(const std::vector<Rational>& durations)
             const uint64_t right = durations[j].n * durations[i].d;
             const uint64_t lo = std::min(left, right);
             const uint64_t hi = std::max(left, right);
-            if (lo * 2 == hi * 3) dottedPair = true;
+            if (hi * 2 == lo * 3) dottedPair = true;
         }
     }
     if (dottedPair) checks.push_back("augmentation_dot");
