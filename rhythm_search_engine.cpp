@@ -144,6 +144,8 @@ std::string descriptor(const std::string& raw) {
             throw std::invalid_argument("tuplet denominator must be a power of two <= 256");
         if (actual < 3 || actual > 9 || normal < 1 || normal > 16)
             throw std::invalid_argument("tuplet counts must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
+        if (actual == 3 && normal == 2)
+            return "triplet@" + std::to_string(den); // Generic 3:2 spelling aliases to legacy triplet.
         return "tuplet@" + std::to_string(den) + ":" + std::to_string(actual) + ":" + std::to_string(normal);
     }
     const uint64_t den = parseU64(payload, "descriptor denominator");
@@ -340,6 +342,21 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
     };
     for (const auto& pair : args)
         if (!supported.count(pair.first)) throw std::invalid_argument("unknown filter: " + pair.first);
+
+    // Sequence and exact descriptors can request uncommon ratios too; infer
+    // their ratios so SearchEngine generates the necessary candidates.
+    auto registerDescriptorRatio = [&](const std::string& value) {
+        if (value.rfind("tuplet@", 0) != 0) return;
+        const auto fields = split(value.substr(value.find('@') + 1), ':');
+        if (fields.size() == 3)
+            f.tupletRatios.insert(fields[1] + ":" + fields[2]);
+    };
+    for (const auto& item : f.exact) registerDescriptorRatio(item.first);
+    registerDescriptorRatio(f.first);
+    registerDescriptorRatio(f.last);
+    for (const auto& item : f.prefix) registerDescriptorRatio(item);
+    for (const auto& item : f.suffix) registerDescriptorRatio(item);
+    for (const auto& item : f.contains) registerDescriptorRatio(item);
     return f;
 }
 
