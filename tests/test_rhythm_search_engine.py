@@ -185,11 +185,12 @@ class RhythmSearchEngineTests(unittest.TestCase):
         self.assertEqual(len(event["tuplet_slots"]), 9)
 
     def test_uncommon_ratio_is_generated_on_demand(self) -> None:
-        result = self.engine.search(
-            "NOTES",
-            exact={"tuplet@4:5:3": 1},
-            limit=5,
-        )
+        with RhythmSearchClient(self.executable, 3, 4, 16) as engine:
+            result = engine.search(
+                "NOTES",
+                exact={"tuplet@4:5:3": 1},
+                limit=5,
+            )
         self.assertEqual(len(result["patterns"]), 1)
         event = result["patterns"][0]["events"][0]
         self.assertEqual(event["tuplet_ratio"], "5:3")
@@ -197,12 +198,13 @@ class RhythmSearchEngineTests(unittest.TestCase):
         self.assertEqual(event["tuplet_slot_duration_whole"], "3/20")
 
     def test_uncommon_ratio_can_be_requested_by_tuplet_pattern_alone(self) -> None:
-        result = self.engine.search(
-            "RESTS",
-            exact={"tuplet@4:5:3": 1},
-            tuplet_patterns=["5:3:NNRNN"],
-            limit=5,
-        )
+        with RhythmSearchClient(self.executable, 3, 4, 16) as engine:
+            result = engine.search(
+                "RESTS",
+                exact={"tuplet@4:5:3": 1},
+                tuplet_patterns=["5:3:NNRNN"],
+                limit=5,
+            )
         self.assertEqual(len(result["patterns"]), 1)
         event = result["patterns"][0]["events"][0]
         self.assertEqual(event["tuplet_ratio"], "5:3")
