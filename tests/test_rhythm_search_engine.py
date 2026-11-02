@@ -211,6 +211,20 @@ class RhythmSearchEngineTests(unittest.TestCase):
         self.assertEqual(event["tuplet_slots"], ["note", "note", "rest", "note", "note"])
         self.assertEqual(event["tuplet_slot_duration_whole"], "3/20")
 
+    def test_undecuplet_ratio_eleven_to_eight(self) -> None:
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@8:11:8": 1},
+            tuplet_ratios=["11:8"],
+            limit=5,
+        )
+        self.assertEqual(len(result["patterns"]), 1)
+        event = result["patterns"][0]["events"][0]
+        self.assertEqual(event["tuplet_ratio"], "11:8")
+        self.assertEqual(event["duration_whole"], "1/1")
+        self.assertEqual(event["tuplet_slot_duration_whole"], "1/11")
+        self.assertEqual(len(event["tuplet_slots"]), 11)
+
     def test_generic_tuplet_rest_and_note_slot_pattern_filter(self) -> None:
         result = self.engine.search(
             "RESTS",
