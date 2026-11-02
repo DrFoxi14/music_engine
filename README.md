@@ -74,10 +74,9 @@ All filters are optional unless noted.
 | `tuplet_patterns` | Restrict generic tuplet slots using actual:normal:pattern | `tuplet_patterns=5:4:NNRNN,7:4:NNRNNRN` |
 | `min_events`, `max_events` | Minimum / maximum number of event groups | `min_events=3 max_events=8` |
 | `min_triplets`, `max_triplets` | Bounds on triplet groups | `min_triplets=1 max_triplets=2` |
-| `tuplet_ratios` | Restrict tuplets by actual:normal ratio | `tuplet_ratios=5:4,7:4` |
 | `min_dotted`, `max_dotted` | Bounds on dotted note/rest events | `min_dotted=1 max_dotted=2` |
-| `min_rest_slots`, `max_rest_slots` | Bounds on rests, including rests inside triplets | `min_rest_slots=1 max_rest_slots=3` |
-| `min_note_slots`, `max_note_slots` | Bounds on noteheads, including triplet slots | `min_note_slots=3 max_note_slots=8` |
+| `min_rest_slots`, `max_rest_slots` | Bounds on rests, including rests inside tuplets | `min_rest_slots=1 max_rest_slots=3` |
+| `min_note_slots`, `max_note_slots` | Bounds on noteheads, including tuplet slots | `min_note_slots=3 max_note_slots=8` |
 | `min_event_ticks`, `max_event_ticks` | Event duration bounds on the engine's exact internal time grid | `min_event_ticks=12` |
 | `first`, `last` | First / last event descriptor | `first=note@2 last=note@4` |
 | `prefix`, `suffix` | Ordered beginning / ending sequence | `prefix=note@2>note@4` |
@@ -99,7 +98,7 @@ An event descriptor is usually `kind@denominator`:
 - `tuplet@8:9:8` — nine eighth-note slots in the time normally occupied by eight eighth notes.
 - `measure_rest@0` — full-measure rest, used when the bar length is not one whole note.
 
-The engine currently generates these standard actual:normal ratios: `3:2`, `4:3`, `5:4`, `6:4`, `7:4`, and `9:8`. The old `triplet@denominator` and `triplet_patterns` interface remains supported. Generic tuplet descriptors include the ratio so different group sizes never collide in exact filters or ordered sequence matching.
+The engine pre-generates these common actual:normal ratios: `3:2`, `4:3`, `5:4`, `6:4`, `7:4`, and `9:8`. Other ratios with `3 <= actual <= 9` and `1 <= normal <= 16` are generated on demand when supplied through `tuplet_ratios` or `tuplet_patterns`. The old `triplet@denominator` and `triplet_patterns` interface remains supported. Generic tuplet descriptors include the ratio so different group sizes never collide in exact filters or ordered sequence matching.
 
 For generic tuplets, the JSON result exposes the ratio, every note/rest slot, and each slot's exact duration. For example, `5:4:NNRNN` means note–note–rest–note–note in a five-slot group. The `durations` filter applies to the entire tuplet group; slot duration is returned separately.
 
