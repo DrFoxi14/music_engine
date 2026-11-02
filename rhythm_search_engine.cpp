@@ -318,7 +318,9 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
             const uint64_t normal = parseU64(parts[1], "tuplet pattern normal count");
             if (actual < 3 || actual > 9 || normal < 1 || normal > 16)
                 throw std::invalid_argument("tuplet pattern ratio out of range");
-            f.tupletPatterns.insert(std::to_string(actual) + ":" + std::to_string(normal) + ":" + parts[2]);
+            const std::string ratio = std::to_string(actual) + ":" + std::to_string(normal);
+            f.tupletRatios.insert(ratio);
+            f.tupletPatterns.insert(ratio + ":" + parts[2]);
         }
     }
     if (auto it = args.find("first"); it != args.end()) f.first = descriptor(it->second);
@@ -375,9 +377,27 @@ public:
     void search(const std::string& category, const Filter& filter) const {
         if (category != "NOTES" && category != "RESTS")
             throw std::invalid_argument("category must be NOTES or RESTS");
-        const std::vector<Event>& events = category == "NOTES" ? noteEvents_ : restEvents_;
+        const std::vector<Event>& baseEvents = category == "NOTES" ? noteEvents_ : restEvents_;
+        std::vector<Event> queryEvents = baseEvents;
 
-        SearchRun run(*this, events, category, filter);
+        // Ratios requested by a caller are generated on demand, so the engine
+        // can support uncommon but valid tuplets without bloating every search.
+        std::set<std::string> availableRatios;
+        for (const auto& event : queryEvents) {
+            if (event.kind == "tuplet" || event.kind == "triplet") {
+                availableRatios.insert(std::to_string(event.actualCount) + ":" +
+                                        std::to_string(event.normalCount));
+            }
+        }
+        for (const auto& ratio : filter.tupletRatios) {
+            if (availableRatios.count(ratio)) continue;
+            const auto parts = split(ratio, ':');
+            const int actual = static_cast<int>(parseU64(parts.at(0), "tuplet actual count"));
+            const int normal = static_cast<int>(parseU64(parts.at(1), "tuplet normal count"));
+            addTupletEvents(queryEvents, category == "RESTS", actual, normal, filter);
+        }
+
+        SearchRun run(*this, queryEvents, category, filter);
         run.execute();
     }
 
@@ -389,6 +409,55 @@ private:
     uint64_t targetTicks_ = 0;
     std::vector<Event> noteEvents_;
     std::vector<Event> restEvents_;
+
+    void addTupletEvents(std::vector<Event>& out, bool includeRests, int actual, int normal,
+                         const Filter& filter) const {
+        const std::string ratio = std::to_string(actual) + ":" + std::to_string(normal);
+        std::set<std::string> requestedMasks;
+        for (const auto& pattern : filter.tupletPatterns) {
+            const auto parts = split(pattern, ':');
+            if (parts.size() == 3 && parts[0] + ":" + parts[1] == ratio)
+                requestedMasks.insert(parts[2]);
+        }
+
+        for (int d = 1; d <= maxDenominator_; d *= 2) {
+            const uint64_t groupTicks =
+                (static_cast<uint64_t>(normal) * ticksPerWhole_) / static_cast<uint64_t>(d);
+            const bool isTriplet = actual == 3 && normal == 2;
+            const int lastMask = (1 << actual) - 1;
+            for (int mask = 0; mask <= lastMask; ++mask) {
+                std::string maskText;
+                std::vector<bool> slots;
+                slots.reserve(static_cast<size_t>(actual));
+                int notes = 0;
+                for (int slot = 0; slot < actual; ++slot) {
+                    const bool isNote = (mask & (1 << slot)) != 0;
+                    slots.push_back(isNote);
+                    maskText += isNote ? 'N' : 'R';
+                    notes += isNote ? 1 : 0;
+                }
+                const int rests = actual - notes;
+                if (!includeRests && rests > 0) continue;
+                if (includeRests && rests == 0) continue;
+                if (!requestedMasks.empty() && !requestedMasks.count(maskText)) continue;
+
+                std::ostringstream label;
+                if (isTriplet) label << "triplet(";
+                else label << "tuplet " << actual << ":" << normal << "(";
+                for (int i = 0; i < actual; ++i) {
+                    if (i) label << ',';
+                    label << (slots[static_cast<size_t>(i)] ? "note" : "rest");
+                }
+                label << ") of " << noteName(d);
+                Event event{
+                    isTriplet ? "triplet" : "tuplet", d, groupTicks, normal, d,
+                    slots, notes, rests, label.str(), actual, normal
+                };
+                out.push_back(std::move(event));
+            }
+            if (d > maxDenominator_ / 2) break;
+        }
+    }
 
     void addCommonEvents(std::vector<Event>& out, bool includeRests) const {
         for (int d = 1; d <= maxDenominator_; d *= 2) {
