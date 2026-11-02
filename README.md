@@ -211,8 +211,9 @@ Capabilities:
 - Key signatures for common major keys and their relative minor keys.
 - Measure-local accidental memory keyed by note letter and octave.
 - Sharp, flat, natural, double-sharp, and double-flat accidental values.
-- Geometric accidental-to-notehead association.
+- Geometric accidental-to-notehead association, with optional Visual Engine-provided `anchor_y` (falls back to glyph bounding-box center).
 - Explicit `associated`, `ambiguous`, and `orphan` accidental outcomes.
+- Advisory chord interval diagnostics for semitone clusters and tritones, with optional visual-review regions; these never reject or rewrite notes.
 - Chord stem attachment checks using the actual attachment notehead: lower chord note for an up-stem, upper chord note for a down-stem.
 - Visual guidance bounding boxes for ambiguous accidentals, off-grid noteheads, and suspicious stem attachments.
 
@@ -266,7 +267,7 @@ with PitchContextClient("./pitch_context_engine") as engine:
 
 ### Accidental-to-note assignment
 
-Accidental association uses page geometry, not harmony as a hard rule. Candidate noteheads must be to the right of the accidental glyph and within a staff-spacing-based vertical/horizontal window. Candidates are ranked by vertical anchor distance, with horizontal distance as a weaker tie-breaker.
+Accidental association uses page geometry, not harmony as a hard rule. Candidate noteheads must be to the right of the accidental glyph and within a staff-spacing-based vertical/horizontal window. Candidates are ranked by vertical anchor distance, with horizontal distance as a weaker tie-breaker. If the Visual Engine can estimate the symbol's musical anchor independently of its bounding-box center (for example, the bulb/center topology of a flat or the center of a natural), pass it as `anchor_y`.
 
 - A clear geometric winner is assigned.
 - If two noteheads have similar geometric scores (for example, the accidental glyph overlaps two staff positions), the result is `ambiguous`; both candidate noteheads are returned for visual reinspection.
