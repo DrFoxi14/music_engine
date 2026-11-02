@@ -1,6 +1,7 @@
 # Build outputs
 /build/
 /ritmuri_engine
+/rhythm_search_engine
 *.o
 *.a
 *.dylib
