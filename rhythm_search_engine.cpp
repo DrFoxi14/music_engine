@@ -142,7 +142,7 @@ std::string descriptor(const std::string& raw) {
         const uint64_t normal = parseU64(fields[2], "tuplet normal count");
         if (den == 0 || den > 256 || !isPowerOfTwo(static_cast<int>(den)))
             throw std::invalid_argument("tuplet denominator must be a power of two <= 256");
-        if (actual < 3 || actual > 9 || normal < 1 || normal > 16)
+        if (actual < 3 || actual > 12 || normal < 1 || normal > 16)
             throw std::invalid_argument("tuplet counts must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
         if (actual == 3 && normal == 2)
             return "triplet@" + std::to_string(den); // Generic 3:2 spelling aliases to legacy triplet.
@@ -305,7 +305,7 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
             if (parts.size() != 2) throw std::invalid_argument("tuplet_ratios must look like 5:4,6:4,7:4");
             const uint64_t actual = parseU64(parts[0], "tuplet actual count");
             const uint64_t normal = parseU64(parts[1], "tuplet normal count");
-            if (actual < 3 || actual > 9 || normal < 1 || normal > 16)
+            if (actual < 3 || actual > 12 || normal < 1 || normal > 16)
                 throw std::invalid_argument("tuplet ratio must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
             f.tupletRatios.insert(std::to_string(actual) + ":" + std::to_string(normal));
         }
@@ -318,7 +318,7 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
                 throw std::invalid_argument("tuplet_patterns must look like 5:4:NNRNN or 7:4:NNRNNRN");
             const uint64_t actual = parseU64(parts[0], "tuplet pattern actual count");
             const uint64_t normal = parseU64(parts[1], "tuplet pattern normal count");
-            if (actual < 3 || actual > 9 || normal < 1 || normal > 16)
+            if (actual < 3 || actual > 12 || normal < 1 || normal > 16)
                 throw std::invalid_argument("tuplet pattern ratio out of range");
             const std::string ratio = std::to_string(actual) + ":" + std::to_string(normal);
             f.tupletRatios.insert(ratio);
@@ -364,7 +364,7 @@ class SearchEngine {
 public:
     SearchEngine(int numerator, int denominator, int maxDenominator)
         : numerator_(numerator), denominator_(denominator), maxDenominator_(maxDenominator),
-          ticksPerWhole_(static_cast<uint64_t>(2520) * maxDenominator) {
+          ticksPerWhole_(static_cast<uint64_t>(27720) * maxDenominator) {
         if (numerator_ < 1 || numerator_ > 10000) throw std::invalid_argument("numerator must be 1..10000");
         if (!isPowerOfTwo(denominator_) || denominator_ > maxDenominator_)
             throw std::invalid_argument("meter denominator must be a power of two <= max note denominator");
@@ -387,7 +387,7 @@ public:
             << ",\"target_ticks\":" << targetTicks_
             << ",\"events_notes_only\":" << noteEvents_.size()
             << ",\"events_with_rests\":" << restEvents_.size()
-            << ",\"tuplet_ratio_range\":{\"actual_min\":3,\"actual_max\":9,\"normal_min\":1,\"normal_max\":16}"
+            << ",\"tuplet_ratio_range\":{\"actual_min\":3,\"actual_max\":12,\"normal_min\":1,\"normal_max\":16}"
             << ",\"protocol\":\"SEARCH|GENERATE category key=value ...\"}";
         return out.str();
     }
