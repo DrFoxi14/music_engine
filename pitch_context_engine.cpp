@@ -666,6 +666,18 @@ private:
                   const std::unordered_map<size_t, std::vector<size_t>>& ambiguous,
                   bool reviewRequired) const {
         (void)key;
+        struct ChordFlag {
+            std::string chordId;
+            size_t noteA;
+            size_t noteB;
+            int intervalClass;
+            std::string label;
+        };
+        std::map<std::string, std::vector<size_t>> chordGroups;
+        for (size_t i = 0; i < notes.size(); ++i) {
+            if (!notes[i].chordId.empty()) chordGroups[notes[i].chordId].push_back(i);
+        }
+        std::vector<ChordFlag> chordFlags;
         std::ostringstream out;
         out << std::fixed << std::setprecision(4);
         out << "{\"type\":\"pitch_resolution\",\"status\":\""
@@ -773,6 +785,41 @@ private:
             out << '}';
         }
 
+        out << "],\"chord_diagnostics\":[";
+        bool firstChord = true;
+        for (const auto& group : chordGroups) {
+            if (group.second.size() < 2) continue;
+            if (!firstChord) out << ',';
+            firstChord = false;
+            out << "{\"chord_id\":\"" << jsonEscape(group.first)
+                << "\",\"status\":\"advisory_only\",\"intervals\":[";
+            bool firstInterval = true;
+            for (size_t a = 0; a < group.second.size(); ++a) {
+                const size_t ia = group.second[a];
+                if (!positions[ia].onGrid || !alterationCertain[ia]) continue;
+                const int midiA = midiPitch(positions[ia].letter, positions[ia].octave, alterations[ia]);
+                for (size_t b = a + 1; b < group.second.size(); ++b) {
+                    const size_t ib = group.second[b];
+                    if (!positions[ib].onGrid || !alterationCertain[ib]) continue;
+                    const int midiB = midiPitch(positions[ib].letter, positions[ib].octave, alterations[ib]);
+                    const int rawInterval = std::abs(midiA - midiB);
+                    const int remainder = rawInterval % 12;
+                    const int intervalClass = std::min(remainder, 12 - remainder);
+                    if (intervalClass != 1 && intervalClass != 6) continue;
+                    const std::string flag = intervalClass == 1 ? "semitone_cluster" : "tritone";
+                    if (!firstInterval) out << ',';
+                    firstInterval = false;
+                    out << "{\"note_a\":\"" << jsonEscape(notes[ia].id)
+                        << "\",\"note_b\":\"" << jsonEscape(notes[ib].id)
+                        << "\",\"semitones\":" << rawInterval
+                        << ",\"interval_class\":" << intervalClass
+                        << ",\"flag\":\"" << flag
+                        << "\",\"action\":\"optional_visual_reinspection\"}";
+                    chordFlags.push_back({group.first, ia, ib, intervalClass, flag});
+                }
+            }
+            out << "],\"rule\":\"advisory_only_never_reject_or_rewrite_a_chord\"}";
+        }
         out << "],\"visual_guidance\":[";
         bool firstGuidance = true;
         for (const auto& a : associations) {
@@ -801,7 +848,28 @@ private:
                 << "\",\"reason\":\"stem_attachment_" << stem.status
                 << "\",\"requested_checks\":[\"stem_x\",\"stem_endpoint\",\"chord_anchor_notehead\"]}";
         }
-        out << "],\"scope_note\":\"One staff/voice and one measure per request. Dissonance is not a rejection rule. Ambiguous glyph-to-note assignment is returned for visual review, never guessed.\"}";
+        for (const auto& flag : chordFlags) {
+            if (!firstGuidance) out << ',';
+            firstGuidance = false;
+            const Box& a = notes[flag.noteA].box;
+            const Box& b = notes[flag.noteB].box;
+            Box unionBox;
+            if (a.valid && b.valid) {
+                unionBox = Box{
+                    std::min(a.left, b.left) - cfg.spacing,
+                    std::min(a.top, b.top) - cfg.spacing,
+                    std::max(a.right, b.right) + cfg.spacing,
+                    std::max(a.bottom, b.bottom) + cfg.spacing,
+                    true
+                };
+            }
+            out << "{\"target\":\"" << jsonEscape(flag.chordId)
+                << "\",\"reason\":\"chord_interval_" << flag.label
+                << "\",\"priority\":\"advisory\",\"bbox\":" << boxJson(unionBox)
+                << ",\"must_not_auto_correct\":true"
+                << ",\"requested_checks\":[\"notehead_staff_positions\",\"accidental_glyphs\",\"key_signature\",\"clef\"]}";
+        }
+        out << "],\"scope_note\":\"One staff/voice and one measure per request. Dissonance diagnostics are advisory and never reject or rewrite notes. Ambiguous glyph-to-note assignment is returned for visual review, never guessed.\"}";
         std::cout << out.str() << '\n' << std::flush;
     }
 };
