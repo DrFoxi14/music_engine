@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 /*
@@ -461,7 +462,7 @@ private:
 
         // A precomputed KMP transition table makes each DFS push/pop transition
         // O(1), rather than rescanning the current prefix at every terminal node.
-        std::map<std::string, size_t> containsSymbolIndex_;
+        std::unordered_map<std::string, size_t> containsSymbolIndex_;
         std::vector<std::vector<size_t>> containsNext_;
         std::vector<std::vector<unsigned char>> containsMatch_;
         std::vector<size_t> containsStateStack_{0};
