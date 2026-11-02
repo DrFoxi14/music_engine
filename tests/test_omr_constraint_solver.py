@@ -160,6 +160,32 @@ class OMRConstraintSolverTests(unittest.TestCase):
         self.assertEqual(result["gap"], "excess")
         self.assertEqual(result["gap_whole"], "1/4")
 
+    def _dotted_pair_measure(self, **kw):
+        # 2/4: [dotted eighth, sixteenth] [eighth, eighth]; the sixteenth's short beam was missed,
+        # so b is read as an eighth: the measure is 1/16 too long, and any of b, c, d could be shortened
+        c8 = [{"duration": "1/8", "confidence": 0.6}, {"duration": "1/16", "confidence": 0.4}]
+        events = [
+            {"id": "a", "candidates": [{"duration": "3/16", "confidence": 0.9}, {"duration": "1/8", "confidence": 0.1}]},
+            {"id": "b", "candidates": c8}, {"id": "c", "candidates": c8}, {"id": "d", "candidates": c8},
+        ]
+        return self.solver.resolve("2/4", events, limit=5, **kw)
+
+    def test_beam_groups_prefer_beat_aligned_solution(self) -> None:
+        plain = self._dotted_pair_measure()
+        top = plain["solutions"][0]["log_visual_score"]
+        self.assertEqual(sum(abs(s["log_visual_score"] - top) < 1e-9 for s in plain["solutions"]), 3)
+        grouped = self._dotted_pair_measure(beat="1/4", groups=[["a", "b"], ["c", "d"]])
+        best = grouped["solutions"][0]["events"]
+        self.assertEqual([e["duration_whole"] for e in best], ["3/16", "1/16", "1/8", "1/8"])
+        self.assertGreater(best and grouped["solutions"][0]["log_visual_score"],
+                           grouped["solutions"][1]["log_visual_score"] + 1.0)
+
+    def test_groups_require_known_consecutive_events(self) -> None:
+        with self.assertRaises(ValueError):
+            self._dotted_pair_measure(beat="1/4", groups=[["a", "c"]])
+        with self.assertRaises(ValueError):
+            self._dotted_pair_measure(groups=[["a", "b"]])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -127,6 +127,13 @@ struct Solution {
 struct SearchConfig {
     uint64_t maxNodes = 200000;
     size_t limit = 20;
+    // Beam groups (optional). Engraving puts the start and the end of a beamed
+    // group on a beat: a group that would start or end off the beat is
+    // possible (syncopation) but unlikely, so each such edge multiplies the
+    // visual score by groupPenalty instead of being forbidden.
+    Rational beat{0, 1};
+    double groupPenalty = 0.2;
+    std::vector<std::vector<std::string>> groups;
 };
 
 double parseConfidence(const std::string& text) {
@@ -252,6 +259,28 @@ public:
             suffixMax_[i] = suffixMax_[i + 1] + maximum;
         }
 
+        if (config_.beat.n) {
+            if (ticksPerWhole_ % config_.beat.d != 0)
+                throw std::invalid_argument("beat is not representable at selected resolution");
+            beatTicks_ = config_.beat.n * (ticksPerWhole_ / config_.beat.d);
+        }
+        groupStart_.assign(events_.size(), false);
+        groupEnd_.assign(events_.size(), false);
+        for (const auto& group : config_.groups) {
+            std::vector<size_t> at;
+            for (const auto& id : group) {
+                size_t i = 0;
+                while (i < events_.size() && events_[i].id != id) ++i;
+                if (i == events_.size()) throw std::invalid_argument("group names an unknown event: " + id);
+                at.push_back(i);
+            }
+            for (size_t k = 1; k < at.size(); ++k)
+                if (at[k] != at[k - 1] + 1)
+                    throw std::invalid_argument("a group must list consecutive events in order");
+            groupStart_[at.front()] = true;
+            groupEnd_[at.back()] = true;
+        }
+
         choices_.resize(events_.size());
         support_.resize(events_.size());
         for (size_t i = 0; i < events_.size(); ++i) {
@@ -364,6 +393,9 @@ private:
     std::vector<InputEvent> events_;
     uint64_t ticksPerWhole_;
     uint64_t targetTicks_ = 0;
+    uint64_t beatTicks_ = 0;
+    std::vector<bool> groupStart_;
+    std::vector<bool> groupEnd_;
     std::set<std::string> ids_;
     std::vector<uint64_t> suffixMin_;
     std::vector<uint64_t> suffixMax_;
@@ -398,8 +430,14 @@ private:
                 suffixMax_[eventIndex + 1] < remaining - candidate.ticks) continue;
 
             choices_[eventIndex] = c;
-            dfs(eventIndex + 1, elapsedTicks + candidate.ticks,
-                logScore + std::log(candidate.confidence));
+            double score = logScore + std::log(candidate.confidence);
+            if (beatTicks_) {
+                if (groupStart_[eventIndex] && elapsedTicks % beatTicks_ != 0)
+                    score += std::log(config_.groupPenalty);
+                if (groupEnd_[eventIndex] && (elapsedTicks + candidate.ticks) % beatTicks_ != 0)
+                    score += std::log(config_.groupPenalty);
+            }
+            dfs(eventIndex + 1, elapsedTicks + candidate.ticks, score);
             if (truncated_ && nodesVisited_ >= config_.maxNodes) return;
         }
     }
@@ -492,6 +530,13 @@ int main(int argc, char** argv) {
                         config.limit = static_cast<size_t>(parseUInt(token.substr(6), "limit"));
                     } else if (token.rfind("max_nodes=", 0) == 0) {
                         config.maxNodes = parseUInt(token.substr(10), "max_nodes");
+                    } else if (token.rfind("beat=", 0) == 0) {
+                        config.beat = parseFraction(token.substr(5));
+                    } else if (token.rfind("group_penalty=", 0) == 0) {
+                        config.groupPenalty = parseConfidence(token.substr(14));
+                    } else if (token.rfind("group=", 0) == 0) {
+                        config.groups.push_back(split(token.substr(6), ','));
+                        if (config.groups.back().empty()) throw std::invalid_argument("empty group");
                     } else {
                         events.push_back(parseEvent(token, kGridPerWhole * static_cast<uint64_t>(maxDenominator)));
                     }

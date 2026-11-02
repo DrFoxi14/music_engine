@@ -202,6 +202,8 @@ Durations use the same exact integer grid as the rhythm search engine (27720 tic
 
 When no assignment fills the measure, the result says why: `gap` is `missing` (even the longest candidates leave `gap_whole` unfilled: a symbol was probably missed), `excess` (even the shortest candidates overflow by `gap_whole`: a spurious symbol or a missed barline), or `no_exact_combination`. `min_total_whole` and `max_total_whole` are always reported.
 
+Beam groups are an optional preference: pass `beat="1/4"` (or `"3/8"` in compound meters) and `groups=[["n2", "n3"], ...]`, lists of consecutive events under one beam. Engraving starts and ends a beamed group on a beat, so each group edge that falls off the beat multiplies the visual score by `group_penalty` (default 0.2). This tells apart solutions that fill the measure equally well, e.g. which eighth of a measure is really the sixteenth whose short beam was missed. Protocol tokens: `beat=1/4 group_penalty=0.2 group=n2,n3`.
+
 Statuses:
 
 - `resolved_unique` — exactly one valid assignment was found and the search completed.

@@ -75,6 +75,9 @@ class OMRConstraintClient:
         max_note_denominator: int = 256,
         max_nodes: int = 200_000,
         limit: int = 20,
+        beat: str | None = None,
+        groups: Sequence[Sequence[str]] = (),
+        group_penalty: float = 0.2,
     ) -> dict[str, Any]:
         """Resolve one sequential monophonic part/voice inside a single measure.
 
@@ -82,6 +85,10 @@ class OMRConstraintClient:
           {"id": "n1", "candidates": [{"duration":"1/4","confidence":0.9}],
            "bbox": {"x":10,"y":20,"width":40,"height":50},
            "visual_checks":["head_fill"]}
+
+        `beat` ("1/4", "3/8") with `groups` (lists of consecutive event ids, e.g.
+        the notes under one beam): a group that starts or ends off the beat
+        multiplies the visual score by `group_penalty` (a preference, not a rule).
         """
         try:
             meter_num, meter_den = (int(part) for part in meter.split("/"))
@@ -107,6 +114,17 @@ class OMRConstraintClient:
             candidate_token = "|".join(self._candidate_text(candidate) for candidate in candidates)
             tokens.append(f"{event_id}={candidate_token}")
             metadata[event_id] = event
+
+        if groups:
+            if not beat:
+                raise ValueError("groups need a beat")
+            tokens.append(f"beat={beat}")
+            tokens.append(f"group_penalty={float(group_penalty)!r}")
+            for group in groups:
+                ids = [self._validate_id(str(i)) for i in group]
+                if not ids or any(i not in metadata for i in ids):
+                    raise ValueError("a group must name known events")
+                tokens.append("group=" + ",".join(ids))
 
         command = " ".join(tokens)
         with self._lock:
