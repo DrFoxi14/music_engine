@@ -1,0 +1,9 @@
+cmake_minimum_required(VERSION 3.20)
+project(MusicEngine LANGUAGES CXX)
+
+add_executable(ritmuri_engine ritmuri_engine.cpp)
+target_compile_features(ritmuri_engine PRIVATE cxx_std_17)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(ritmuri_engine PRIVATE -Wall -Wextra -Wpedantic)
+endif()
