@@ -98,7 +98,7 @@ An event descriptor is usually `kind@denominator`:
 - `tuplet@8:9:8` — nine eighth-note slots in the time normally occupied by eight eighth notes.
 - `measure_rest@0` — full-measure rest, used when the bar length is not one whole note.
 
-The engine pre-generates these common actual:normal ratios: `3:2`, `4:3`, `5:4`, `6:4`, `7:4`, and `9:8`. Other ratios with `3 <= actual <= 9` and `1 <= normal <= 16` are generated on demand when supplied through `tuplet_ratios` or `tuplet_patterns`. The old `triplet@denominator` and `triplet_patterns` interface remains supported. Generic tuplet descriptors include the ratio so different group sizes never collide in exact filters or ordered sequence matching.
+The engine pre-generates these common actual:normal ratios: `3:2`, `4:3`, `5:4`, `6:4`, `7:4`, and `9:8`. Other ratios with `3 <= actual <= 12` and `1 <= normal <= 16` are generated on demand when supplied through `tuplet_ratios` or `tuplet_patterns`, including ratios such as `11:8`. The old `triplet@denominator` and `triplet_patterns` interface remains supported. Generic tuplet descriptors include the ratio so different group sizes never collide in exact filters or ordered sequence matching.
 
 For generic tuplets, the JSON result exposes the ratio, every note/rest slot, and each slot's exact duration. For example, `5:4:NNRNN` means note–note–rest–note–note in a five-slot group. The `durations` filter applies to the entire tuplet group; slot duration is returned separately.
 
