@@ -18,9 +18,12 @@ class OMRConstraintSolverTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.temp = tempfile.TemporaryDirectory()
         cls.binary = Path(cls.temp.name) / "omr_constraint_solver"
+        compiler = "clang++"
+        if subprocess.run(["which", compiler], capture_output=True).returncode != 0:
+            compiler = "g++"
         subprocess.run(
             [
-                "clang++", "-std=c++17", "-O2",
+                compiler, "-std=c++17", "-O2",
                 str(ROOT / "omr_constraint_solver.cpp"),
                 "-o", str(cls.binary),
             ],
