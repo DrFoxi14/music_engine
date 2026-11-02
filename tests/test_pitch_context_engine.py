@@ -146,6 +146,25 @@ class PitchContextEngineTests(unittest.TestCase):
         self.assertEqual(pitches["f5a"]["effective_alteration"], 0)
         self.assertEqual(pitches["f5b"]["effective_alteration"], 0)
 
+    def test_chord_interval_diagnostic_is_advisory_not_rejection(self):
+        result = self.resolve(
+            [
+                note("c4", 200, 150, chord="ch1"),
+                note("d4", 200, 145, chord="ch1"),
+            ],
+            accidentals=[{
+                "id": "flat_d4", "kind": "flat",
+                "bbox": {"left": 170, "top": 141, "right": 182, "bottom": 149},
+            }],
+        )
+        chord = next(item for item in result["chord_diagnostics"] if item["chord_id"] == "ch1")
+        self.assertEqual(chord["status"], "advisory_only")
+        self.assertEqual(chord["intervals"][0]["interval_class"], 1)
+        self.assertIn("semitone_cluster", chord["intervals"][0]["flag"])
+        guidance = next(item for item in result["visual_guidance"] if item["target"] == "ch1")
+        self.assertTrue(guidance["must_not_auto_correct"])
+        self.assertEqual(result["status"], "resolved")
+
     def test_shared_up_stem_anchors_at_lower_chord_notehead(self):
         result = self.resolve(
             [
