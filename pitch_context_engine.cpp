@@ -766,7 +766,8 @@ public:
 
                 if (tieResults[noteIndex].status == "continued" ||
                     tieResults[noteIndex].status == "continued_with_cautionary_accidental" ||
-                    tieResults[noteIndex].status == "accidental_conflict") {
+                    tieResults[noteIndex].status == "accidental_conflict" ||
+                    tieResults[noteIndex].status == "ambiguous_target_accidental") {
                     // Even when a printed accidental conflicts with the tie,
                     // the tied pitch remains the source pitch. Mark it uncertain
                     // for review, but do not silently rewrite it.
@@ -781,7 +782,17 @@ public:
 
                 if (!ambiguousAccidentals[noteIndex].empty()) {
                     alterationCertain[noteIndex] = false;
-                    alterationSource[noteIndex] = "ambiguous_accidental_assignment";
+                    if (tieResults[noteIndex].status == "continued" ||
+                        tieResults[noteIndex].status == "continued_with_cautionary_accidental") {
+                        tieResults[noteIndex].status = "ambiguous_target_accidental";
+                        alterationSource[noteIndex] = "tie_carry";
+                        for (auto& event : tieEvents) {
+                            if (event.type == "incoming" && event.noteId == notes[noteIndex].id)
+                                event.status = tieResults[noteIndex].status;
+                        }
+                    } else {
+                        alterationSource[noteIndex] = "ambiguous_accidental_assignment";
+                    }
                 }
                 if (tieResults[noteIndex].status == "missing_source" ||
                     tieResults[noteIndex].status == "pitch_mismatch" ||
