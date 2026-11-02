@@ -759,7 +759,11 @@ public:
                     ? key.get(position.letter) : local->second;
 
                 if (tieResults[noteIndex].status == "continued" ||
-                    tieResults[noteIndex].status == "continued_with_cautionary_accidental") {
+                    tieResults[noteIndex].status == "continued_with_cautionary_accidental" ||
+                    tieResults[noteIndex].status == "accidental_conflict") {
+                    // Even when a printed accidental conflicts with the tie,
+                    // the tied pitch remains the source pitch. Mark it uncertain
+                    // for review, but do not silently rewrite it.
                     alteration = tieResults[noteIndex].carriedAlteration;
                     alterationSource[noteIndex] = "tie_carry";
                 }
