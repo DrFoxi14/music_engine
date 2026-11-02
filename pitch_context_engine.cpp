@@ -1146,8 +1146,9 @@ private:
         for (const auto& tie : tieEvents) {
             const bool needsReview = tie.type == "incoming_unmatched" ||
                 tie.status == "missing_source" || tie.status == "pitch_mismatch" ||
-                tie.status == "accidental_conflict" || tie.status == "duplicate_incoming_tie_id" ||
-                tie.status == "duplicate_outgoing_tie_id" || tie.status == "source_pitch_uncertain";
+                tie.status == "accidental_conflict" || tie.status == "ambiguous_target_accidental" ||
+                tie.status == "duplicate_incoming_tie_id" || tie.status == "duplicate_outgoing_tie_id" ||
+                tie.status == "source_pitch_uncertain";
             if (!needsReview) continue;
             if (!firstGuidance) out << ',';
             firstGuidance = false;
