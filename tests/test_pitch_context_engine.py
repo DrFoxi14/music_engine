@@ -181,6 +181,28 @@ class PitchContextEngineTests(unittest.TestCase):
         self.assertEqual(stem["anchor_note_id"], "lower")
         self.assertEqual(stem["attached_note_count"], 2)
 
+    def test_chord_members_with_multiple_stems_request_review(self):
+        result = self.resolve(
+            [
+                note("upper", 200, 110, stem="s1", chord="ch1"),
+                note("lower", 200, 120, stem="s2", chord="ch1"),
+            ],
+            stems=[
+                {"id": "s1", "chord_id": "ch1", "x": 210, "y_top": 70, "y_bottom": 110, "direction": "up"},
+                {"id": "s2", "chord_id": "ch1", "x": 210, "y_top": 80, "y_bottom": 120, "direction": "up"},
+            ],
+        )
+        chord = result["chord_stem_checks"][0]
+        self.assertEqual(chord["status"], "multiple_stems_needs_review")
+        self.assertEqual(result["status"], "review_required")
+
+    def test_missing_stem_reference_requests_visual_guidance(self):
+        result = self.resolve([
+            note("n1", 200, 120, stem="not_detected", chord="ch1")
+        ])
+        self.assertEqual(result["status"], "review_required")
+        self.assertEqual(result["visual_guidance"][0]["reason"], "missing_stem_reference")
+
     def test_invalid_stem_attachment_requests_review(self):
         result = self.resolve(
             [note("n1", 200, 120, stem="s1", chord="ch1")],
