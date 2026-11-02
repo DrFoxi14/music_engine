@@ -149,3 +149,52 @@ This is a bounded depth-first search, not a database containing every possible r
 - Exact multiset queries such as `exact=note@2:1,note@4:2` are especially efficient because the engine only explores the specified event inventory.
 
 The search engine currently supports normal notes/rests, single-dotted notes/rests, and triplet groups. Double/triple dots, quintuplets, septuplets, ties, accents, and notation engraving are not implemented yet.
+
+
+## OMR Constraint Solver
+
+`omr_constraint_solver.cpp` resolves rhythmic duration candidates supplied by a Visual Engine. It is image-agnostic: the visual model detects stems, flags, beams, noteheads, dots, and candidate durations; this solver checks exact musical timing.
+
+Build:
+
+```bash
+clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic omr_constraint_solver.cpp -o omr_constraint_solver
+```
+
+Python API:
+
+```python
+from omr_constraint_client import OMRConstraintClient
+
+events = [
+    {"id": "n1", "candidates": [{"duration": "1/2", "confidence": 0.99}]},
+    {"id": "n2", "candidates": [{"duration": "1/4", "confidence": 0.98}]},
+    {
+        "id": "n3",
+        "candidates": [
+            {"duration": "1/2", "confidence": 0.52},
+            {"duration": "1/4", "confidence": 0.48},
+        ],
+        "bbox": {"x": 1240, "y": 850, "width": 90, "height": 120},
+    },
+]
+
+with OMRConstraintClient("./omr_constraint_solver") as solver:
+    result = solver.resolve("4/4", events)
+    print(result["status"])
+    print(result["solutions"])
+    print(result["event_support"])
+```
+
+The example resolves the last note to a quarter note because the other candidates do not fill the 4/4 measure. Candidate confidence only ranks valid solutions; it never overrides the exact duration constraint.
+
+Statuses:
+
+- `resolved_unique` — exactly one valid assignment was found and the search completed.
+- `ambiguous` — multiple valid assignments remain.
+- `inconsistent` — no assignment satisfies the supplied candidates and measure.
+- `incomplete` — the node budget was reached; uniqueness cannot be claimed.
+
+The solver returns exact onset positions, candidate support/elimination per event, and suggested visual checks. The Python client attaches caller-provided bounding boxes to those guidance records.
+
+**Scope limitation:** version 1 handles one ordered monophonic voice/part in one measure. It must be called separately for each voice. Polyphonic SATB alignment, pickup measures, ties across barlines, tuplets beyond supplied effective durations, and cross-measure constraints require later extensions. Musical validity is not proof that the visual candidate list is correct: if the Visual Engine omitted the true candidate, the solver can report `inconsistent`, but cannot reconstruct missing pixel evidence.
