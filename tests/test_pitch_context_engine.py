@@ -356,6 +356,37 @@ class PitchContextEngineTests(unittest.TestCase):
         )["notes"][0]
         self.assertEqual(target["tie_status"], "missing_source")
 
+    def test_ambiguous_accidental_on_tied_target_keeps_tie_pitch_and_requests_review(self):
+        self.resolve(
+            [note("source", 200, 100, tie_id="ambiguous-tie", tie_to_next=True)],
+            key_signature="G", measure_id="m1",
+            accidentals=[{
+                "id": "natural-f", "kind": "natural",
+                "bbox": {"left": 170, "top": 96, "right": 182, "bottom": 104},
+            }],
+        )
+        result = self.resolve(
+            [
+                note("tied-f5", 200, 100, tie_id="ambiguous-tie", tie_from_previous=True),
+                note("neighbor-e5", 200, 105),
+            ],
+            key_signature="G", measure_id="m2",
+            accidentals=[{
+                "id": "ambiguous-symbol", "kind": "sharp",
+                "bbox": {"left": 170, "top": 96, "right": 182, "bottom": 109},
+            }],
+        )
+        tied = next(item for item in result["notes"] if item["id"] == "tied-f5")
+        self.assertEqual(tied["effective_alteration"], 0)
+        self.assertEqual(tied["alteration_source"], "tie_carry")
+        self.assertEqual(tied["tie_status"], "ambiguous_target_accidental")
+        self.assertFalse(tied["pitch_certain"])
+        self.assertEqual(result["status"], "review_required")
+        self.assertTrue(any(
+            item["reason"] == "tie_ambiguous_target_accidental"
+            for item in result["visual_guidance"]
+        ))
+
     def test_tied_target_cautionary_accidental_must_match_carried_pitch(self):
         self.resolve(
             [note("source", 200, 100, tie_id="cautionary", tie_to_next=True)],
