@@ -1,99 +1,151 @@
 # Music Engine
 
-A compact C++17 rhythm-combination engine for exact musical time signatures.
+A C++17 toolkit for exact rhythmic pattern generation, enumeration, and filtered search.
 
-## What it does
+## Components
 
-- Counts all supported ordered rhythmic patterns for a selected time signature.
-- Retrieves a pattern by its zero-based index without storing the entire result set.
-- Streams result pages as JSON Lines (JSONL), suitable for bots and other programs.
-- Separates patterns containing only notes from patterns containing at least one rest.
-- Supports regular notes, single-dotted notes, and complete triplet groups.
-- Uses arbitrary-precision non-negative integers for exact counts and large indexes.
+- `ritmuri_engine.cpp` — compact dynamic-programming index for counting and retrieving patterns by index.
+- `rhythm_search_engine.cpp` — bounded, filter-driven search and lazy pattern generation.
+- `ritmuri_client.py` — Python client for the original index engine.
+- `rhythm_search_client.py` — Python client for filtered search and generation.
 
-The engine builds a dynamic-programming index in memory. It does **not** generate a giant text file or reserve a fixed amount of RAM.
+The engines keep their working indexes and event tables in process memory. They do not materialize the full combinatorial pattern space or write a giant TXT file.
 
-## Project files
+## Build on macOS / Apple Silicon
 
-- `ritmuri_engine.cpp` — C++17 engine and JSONL command server.
-- `ritmuri_client.py` — Python client that keeps the engine process alive.
-
-## Build on Apple Silicon / macOS
+Using Apple Clang:
 
 ```bash
-clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -pedantic ritmuri_engine.cpp -o ritmuri_engine
+clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic ritmuri_engine.cpp -o ritmuri_engine
+clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic rhythm_search_engine.cpp -o rhythm_search_engine
 ```
 
-Run 4/4 with note values down to 1/256:
+Or with CMake:
 
 ```bash
-./ritmuri_engine 4 4 256
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ```
 
-Arguments:
+Start the search process for 4/4 with note values down to 1/256:
+
+```bash
+./rhythm_search_engine 4 4 256
+```
+
+Arguments are:
 
 ```
-./ritmuri_engine <numerator> <denominator> <maximum_note_denominator>
+rhythm_search_engine <numerator> <denominator> <maximum_note_denominator>
 ```
 
-The maximum note denominator must be a power of two from 2 through 256.
+The maximum note denominator is a power of two from 2 through 256.
 
-## JSONL protocol
+## Search and generation protocol
 
-The process stays running and accepts one command per input line:
+The process stays alive and accepts one command per input line. Each result is emitted as one JSON object per line (JSONL).
 
 ```
-COUNT NOTES
-COUNT RESTS
-GET NOTES 0
-GET RESTS 12345678901234567890
-PAGE NOTES 0 20
-PAGE RESTS 100 50
 HELP
+SEARCH NOTES limit=50 max_nodes=200000 exact=note@2:1,note@4:2
+SEARCH RESTS limit=50 kinds=note,dotted_note,rest,triplet subdivisions=2,4,8
+GENERATE NOTES limit=20 exact=note@2:1,note@4:2 prefix=note@2
 EXIT
 ```
 
-- `NOTES`: ordered patterns containing only notes.
-- `RESTS`: ordered patterns containing at least one rest.
-- `COUNT`: returns an exact count as a decimal string.
-- `GET`: reconstructs one pattern by index.
-- `PAGE`: returns between 1 and 1000 patterns.
-- Indexing starts at zero.
-- Each response is one JSON object per line.
+- `NOTES` — patterns containing only notes.
+- `RESTS` — patterns containing at least one rest, including rests inside triplet groups.
+- `SEARCH` and `GENERATE` currently use the same lazy generation pipeline.
+- The final `search_summary` reports results returned, nodes visited, whether the node budget truncated the search, and whether more matching patterns exist.
+- Search does not store every possible pattern. It walks the candidate space and emits only matches.
+
+## Filters
+
+All filters are optional unless noted.
+
+| Filter | Meaning | Example |
+|---|---|---|
+| `exact` | Exact multiset of event descriptors; returns all distinct orderings | `exact=note@2:1,note@4:2` |
+| `kinds` | Allowed event kinds | `kinds=note,dotted_note,triplet` |
+| `denominators` / `subdivisions` | Base note denominators allowed | `subdivisions=4,8,16` |
+| `durations` | Actual event durations, expressed as fractions of a whole note | `durations=1/4,3/8,1/8` |
+| `triplet_patterns` | Triplet slots, left to right: N = note, R = rest | `triplet_patterns=NNN,NRN,RNN` |
+| `min_events`, `max_events` | Minimum / maximum number of event groups | `min_events=3 max_events=8` |
+| `min_triplets`, `max_triplets` | Bounds on triplet groups | `min_triplets=1 max_triplets=2` |
+| `min_dotted`, `max_dotted` | Bounds on dotted note/rest events | `min_dotted=1 max_dotted=2` |
+| `min_rest_slots`, `max_rest_slots` | Bounds on rests, including rests inside triplets | `min_rest_slots=1 max_rest_slots=3` |
+| `min_note_slots`, `max_note_slots` | Bounds on noteheads, including triplet slots | `min_note_slots=3 max_note_slots=8` |
+| `min_event_ticks`, `max_event_ticks` | Event duration bounds on the engine's exact internal time grid | `min_event_ticks=12` |
+| `first`, `last` | First / last event descriptor | `first=note@2 last=note@4` |
+| `prefix`, `suffix` | Ordered beginning / ending sequence | `prefix=note@2>note@4` |
+| `contains` | Ordered contiguous sequence anywhere in the pattern | `contains=note@2>triplet@8` |
+| `limit` | Maximum results returned (1–1000; default 50) | `limit=100` |
+| `offset` | Skip this many matches before returning results | `offset=100` |
+| `max_nodes` | Search work budget (default 200,000; maximum 10,000,000) | `max_nodes=1000000` |
+
+### Descriptor syntax
+
+An event descriptor is `kind@denominator`:
+
+- `note@2` — half note.
+- `note@4` — quarter note.
+- `dotted_note@4` — dotted quarter note (actual duration `3/8` of a whole note).
+- `rest@8` — eighth rest.
+- `triplet@8` — one group of three eighth-note triplet slots spanning `1/4` of a whole note.
+- `measure_rest@0` — full-measure rest, used when the bar length is not one whole note.
+
+For a triplet, the JSON result also exposes the three slots and their individual duration. For example, `NRN` means note–rest–note. The `durations` filter applies to the whole event group; the triplet slot duration is returned separately.
+
+### Example: one half note and two quarter notes in 4/4
+
+```text
+SEARCH NOTES exact=note@2:1,note@4:2 limit=10
+```
+
+This produces the three distinct event orders:
+
+1. half, quarter, quarter
+2. quarter, half, quarter
+3. quarter, quarter, half
+
+### Example: dotted quarter, two quarters, and an eighth
+
+```text
+SEARCH NOTES exact=dotted_note@4:1,note@4:2,note@8:1 durations=3/8,1/4,1/8 limit=20
+```
+
+### Example: triplet with a rest in the middle
+
+```text
+SEARCH RESTS exact=triplet@8:1,note@2:1,note@4:1 triplet_patterns=NRN limit=20
+```
 
 ## Python client
 
 ```python
-from ritmuri_client import RhythmEngineClient
+from rhythm_search_client import RhythmSearchClient
 
-with RhythmEngineClient("./ritmuri_engine", 4, 4, 256) as engine:
-    print(engine.info)
-    print("Patterns without rests:", engine.count("NOTES"))
-    print("Pattern 0:", engine.get(0, "NOTES"))
-    print("First 25 patterns with rests:", engine.page(0, 25, "RESTS"))
+with RhythmSearchClient("./rhythm_search_engine", 4, 4, 256) as engine:
+    result = engine.search(
+        "NOTES",
+        exact={"note@2": 1, "note@4": 2},
+        limit=20,
+    )
+
+    print(result["summary"])
+    for pattern in result["patterns"]:
+        print(pattern)
 ```
 
-Python is only a client. The combinatorial calculations happen in C++.
+The Python process is only a client. The search and generation run in C++.
 
-## Rhythm model and current scope
+## Search limits and completeness
 
-The internal time grid is exact for normal note values, single dots, and triplets at the configured resolution. The engine currently includes:
+This is a bounded depth-first search, not a database containing every possible rhythm. It is designed for targeted requests from a bot.
 
-- Normal note values from 1/1 to the selected maximum denominator.
-- Single-dotted notes and rests.
-- Complete triplet groups, with note/rest slot variants in the `RESTS` category.
-- All ordered sequences of supported events that exactly fill the measure.
-- A full-measure rest event where needed.
+- If `has_more=true`, additional matching results exist after the returned page.
+- If `truncated=true`, the configured node budget was reached before the search space was exhausted. Increase `max_nodes` or make the filters more selective.
+- If both are false, the search completed and all matches for that query were examined.
+- Exact multiset queries such as `exact=note@2:1,note@4:2` are especially efficient because the engine only explores the specified event inventory.
 
-Not implemented yet:
-
-- Double or triple dots.
-- Tuplets other than triplets (quintuplets, septuplets, etc.).
-- Ties across events, accents, articulations, pickups, or overlapping polyrhythms.
-- Semantic filters such as “exactly one half note and two quarter notes”.
-
-## Storage and performance
-
-The engine stores dynamic-programming counts for remaining durations, not every possible pattern. This makes arbitrary-index retrieval possible without writing the full combinatorial space to an SSD.
-
-No fixed 25 GB allocation is made: memory use is proportional to the measure resolution and the size of the exact counters.
+The search engine currently supports normal notes/rests, single-dotted notes/rests, and triplet groups. Double/triple dots, quintuplets, septuplets, ties, accents, and notation engraving are not implemented yet.
