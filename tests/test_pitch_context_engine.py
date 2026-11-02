@@ -12,11 +12,17 @@ from pitch_context_client import PitchContextClient
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def note(note_id, x, y, stem=None, chord=None):
+def note(
+    note_id, x, y, stem=None, chord=None, tie_id=None,
+    tie_from_previous=False, tie_to_next=False,
+):
     return {
         "id": note_id, "x": x, "y": y, "confidence": 0.99,
         "bbox": {"left": x - 10, "top": y - 5, "right": x + 10, "bottom": y + 5},
         "stem_id": stem, "chord_id": chord,
+        "tie_id": tie_id,
+        "tie_from_previous": tie_from_previous,
+        "tie_to_next": tie_to_next,
     }
 
 
@@ -222,6 +228,156 @@ class PitchContextEngineTests(unittest.TestCase):
         )
         self.assertTrue(result["notes"][0]["on_staff_grid"])
         self.assertEqual((result["notes"][0]["letter"], result["notes"][0]["octave"]), ("F", 5))
+
+    def test_cross_barline_tie_carries_accidental_only_for_tied_note(self):
+        first = self.resolve(
+            [note("f-natural-source", 200, 100, tie_id="tie-f", tie_to_next=True)],
+            key_signature="G",
+            measure_id="m1",
+            staff_id="treble-1",
+            voice_id="soprano",
+            accidentals=[{
+                "id": "natural-f", "kind": "natural",
+                "bbox": {"left": 170, "top": 96, "right": 182, "bottom": 104},
+            }],
+        )
+        self.assertEqual(first["notes"][0]["effective_alteration"], 0)
+        self.assertEqual(first["notes"][0]["tie_status"], "pending_next_measure")
+
+        second = self.resolve(
+            [
+                note("f-natural-target", 200, 100, tie_id="tie-f", tie_from_previous=True),
+                note("f-sharp-independent", 300, 100),
+            ],
+            key_signature="G",
+            measure_id="m2",
+            staff_id="treble-1",
+            voice_id="soprano",
+        )
+        pitches = {item["id"]: item for item in second["notes"]}
+        tied = pitches["f-natural-target"]
+        independent = pitches["f-sharp-independent"]
+        self.assertEqual(tied["effective_alteration"], 0)
+        self.assertEqual(tied["alteration_source"], "tie_carry")
+        self.assertEqual(tied["tie_status"], "continued")
+        self.assertEqual(tied["tie_source_note_id"], "f-natural-source")
+        self.assertEqual(independent["effective_alteration"], 1)
+        self.assertEqual(independent["alteration_source"], "key_signature")
+        self.assertEqual(second["tie_events"][0]["status"], "continued")
+
+    def test_tie_chain_relays_carried_pitch_across_multiple_bars(self):
+        first = self.resolve(
+            [note("source", 200, 100, tie_id="chain-1", tie_to_next=True)],
+            key_signature="G", measure_id="m1",
+            accidentals=[{
+                "id": "natural-f", "kind": "natural",
+                "bbox": {"left": 170, "top": 96, "right": 182, "bottom": 104},
+            }],
+        )
+        second = self.resolve(
+            [note("middle", 200, 100, tie_id="chain-1",
+                  tie_from_previous=True, tie_to_next=True)],
+            key_signature="G", measure_id="m2",
+        )
+        third = self.resolve(
+            [note("end", 200, 100, tie_id="chain-1", tie_from_previous=True)],
+            key_signature="G", measure_id="m3",
+        )
+        self.assertEqual(first["notes"][0]["effective_alteration"], 0)
+        self.assertEqual(second["notes"][0]["effective_alteration"], 0)
+        self.assertEqual(second["notes"][0]["tie_status"], "continued_and_relayed")
+        self.assertEqual(third["notes"][0]["effective_alteration"], 0)
+        self.assertEqual(third["notes"][0]["tie_status"], "continued")
+
+    def test_tie_state_is_isolated_by_staff_and_voice(self):
+        self.resolve(
+            [note("source", 200, 100, tie_id="same-tie", tie_to_next=True)],
+            key_signature="G", measure_id="m1",
+            staff_id="staff-A", voice_id="soprano",
+            accidentals=[{
+                "id": "natural-f", "kind": "natural",
+                "bbox": {"left": 170, "top": 96, "right": 182, "bottom": 104},
+            }],
+        )
+        other_voice = self.resolve(
+            [note("target", 200, 100, tie_id="same-tie", tie_from_previous=True)],
+            key_signature="G", measure_id="m2",
+            staff_id="staff-A", voice_id="alto",
+        )
+        target = other_voice["notes"][0]
+        self.assertEqual(target["tie_status"], "missing_source")
+        self.assertFalse(target["pitch_certain"])
+        self.assertEqual(target["effective_alteration"], 1)
+
+    def test_tie_target_diatonic_pitch_mismatch_is_not_carried(self):
+        self.resolve(
+            [note("source-f5", 200, 100, tie_id="bad-link", tie_to_next=True)],
+            key_signature="G", measure_id="m1",
+            accidentals=[{
+                "id": "natural-f", "kind": "natural",
+                "bbox": {"left": 170, "top": 96, "right": 182, "bottom": 104},
+            }],
+        )
+        second = self.resolve(
+            [note("target-d5", 200, 110, tie_id="bad-link", tie_from_previous=True)],
+            key_signature="G", measure_id="m2",
+        )
+        target = second["notes"][0]
+        self.assertEqual(target["tie_status"], "pitch_mismatch")
+        self.assertEqual(target["effective_alteration"], 0)
+        self.assertFalse(target["pitch_certain"])
+        self.assertEqual(second["status"], "review_required")
+
+    def test_unmatched_tie_source_requests_visual_review(self):
+        self.resolve(
+            [note("source", 200, 100, tie_id="unmatched", tie_to_next=True)],
+            key_signature="G", measure_id="m1",
+        )
+        second = self.resolve(
+            [note("other", 200, 120)],
+            key_signature="G", measure_id="m2",
+        )
+        self.assertEqual(second["status"], "review_required")
+        self.assertTrue(any(
+            event["status"] == "target_not_detected_in_next_measure"
+            for event in second["tie_events"]
+        ))
+
+    def test_tie_state_can_be_explicitly_reset(self):
+        self.resolve(
+            [note("source", 200, 100, tie_id="reset-me", tie_to_next=True)],
+            key_signature="G", measure_id="m1",
+        )
+        reset_result = self.engine.reset_ties(staff_id="staff0", voice_id="voice0")
+        self.assertEqual(reset_result["type"], "tie_state_reset")
+        target = self.resolve(
+            [note("target", 200, 100, tie_id="reset-me", tie_from_previous=True)],
+            key_signature="G", measure_id="m2",
+        )["notes"][0]
+        self.assertEqual(target["tie_status"], "missing_source")
+
+    def test_tied_target_cautionary_accidental_must_match_carried_pitch(self):
+        self.resolve(
+            [note("source", 200, 100, tie_id="cautionary", tie_to_next=True)],
+            key_signature="G", measure_id="m1",
+            accidentals=[{
+                "id": "natural-f", "kind": "natural",
+                "bbox": {"left": 170, "top": 96, "right": 182, "bottom": 104},
+            }],
+        )
+        result = self.resolve(
+            [note("target", 200, 100, tie_id="cautionary", tie_from_previous=True)],
+            key_signature="G", measure_id="m2",
+            accidentals=[{
+                "id": "sharp-f", "kind": "sharp",
+                "bbox": {"left": 170, "top": 96, "right": 182, "bottom": 104},
+            }],
+        )
+        target = result["notes"][0]
+        self.assertEqual(target["tie_status"], "accidental_conflict")
+        self.assertEqual(target["effective_alteration"], 0)
+        self.assertFalse(target["pitch_certain"])
+        self.assertEqual(result["status"], "review_required")
 
     def test_bass_bottom_line_maps_to_g2(self):
         result = self.engine.resolve(
