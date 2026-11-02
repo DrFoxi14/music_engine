@@ -540,7 +540,6 @@ public:
         for (size_t i = 0; i < stems.size(); ++i) stemIndex[stems[i].id] = i;
 
         std::vector<std::vector<size_t>> chordStemNoteIndices(stems.size());
-        std::vector<std::vector<size_t>> chordNoteIndices;
         std::map<std::string, std::vector<size_t>> notesByChord;
         for (size_t i = 0; i < notes.size(); ++i) {
             if (!notes[i].chordId.empty()) notesByChord[notes[i].chordId].push_back(i);
@@ -673,7 +672,6 @@ private:
             const auto& n = notes[i];
             const auto& p = positions[i];
             const int midi = midiPitch(p.letter, p.octave, alterations[i]);
-            const int naturalKeyAlteration = 0;
 
             out << "{\"id\":\"" << jsonEscape(n.id)
                 << "\",\"x\":" << n.x << ",\"y\":" << n.y
@@ -681,7 +679,7 @@ private:
                 << ",\"staff_grid_residual_px\":" << p.residualPx
                 << ",\"on_staff_grid\":" << (p.onGrid ? "true" : "false")
                 << ",\"letter\":\"" << p.letter << "\",\"octave\":" << p.octave
-                << ",\"key_signature_alteration\":" << naturalKeyAlteration + 0
+                << ",\"key_signature_alteration\":" << key.get(p.letter)
                 << ",\"effective_alteration\":" << alterations[i]
                 << ",\"effective_accidental\":\"" << accidentalName(alterations[i])
                 << "\",\"midi_pitch\":" << midi
