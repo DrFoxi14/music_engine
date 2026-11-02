@@ -198,3 +198,87 @@ Statuses:
 The solver returns exact onset positions, candidate support/elimination per event, and suggested visual checks. The Python client attaches caller-provided bounding boxes to those guidance records.
 
 **Scope limitation:** version 1 handles one ordered monophonic voice/part in one measure. It must be called separately for each voice. Polyphonic SATB alignment, pickup measures, ties across barlines, tuplets beyond supplied effective durations, and cross-measure constraints require later extensions. Musical validity is not proof that the visual candidate list is correct: if the Visual Engine omitted the true candidate, the solver can report `inconsistent`, but cannot reconstruct missing pixel evidence.
+
+
+## Pitch Context Engine (Y-axis / pitch reasoning)
+
+`pitch_context_engine.cpp` maps notehead geometry to diatonic and chromatic pitch. The Visual Engine supplies the detected staff geometry and symbol bounding boxes; this module does not perform image recognition.
+
+Capabilities:
+
+- Clef-aware staff mapping for treble, bass, alto, and tenor clefs.
+- Staff skew compensation using a linear slope.
+- Key signatures for common major keys and their relative minor keys.
+- Measure-local accidental memory keyed by note letter and octave.
+- Sharp, flat, natural, double-sharp, and double-flat accidental values.
+- Geometric accidental-to-notehead association.
+- Explicit `associated`, `ambiguous`, and `orphan` accidental outcomes.
+- Chord stem attachment checks using the actual attachment notehead: lower chord note for an up-stem, upper chord note for a down-stem.
+- Visual guidance bounding boxes for ambiguous accidentals, off-grid noteheads, and suspicious stem attachments.
+
+Build:
+
+```bash
+clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic pitch_context_engine.cpp -o pitch_context_engine
+```
+
+Python API:
+
+```python
+from pitch_context_client import PitchContextClient
+
+notes = [
+    {
+        "id": "n1", "x": 200, "y": 120,
+        "bbox": {"left": 190, "top": 115, "right": 210, "bottom": 125},
+        "stem_id": "s1", "chord_id": "ch1",
+    },
+    {
+        "id": "n2", "x": 200, "y": 110,
+        "bbox": {"left": 190, "top": 105, "right": 210, "bottom": 115},
+        "stem_id": "s1", "chord_id": "ch1",
+    },
+]
+accidentals = [{
+    "id": "a1", "kind": "sharp",
+    "bbox": {"left": 170, "top": 103, "right": 182, "bottom": 117},
+}]
+stems = [{
+    "id": "s1", "chord_id": "ch1", "x": 210,
+    "y_top": 80, "y_bottom": 120, "direction": "up",
+}]
+
+with PitchContextClient("./pitch_context_engine") as engine:
+    result = engine.resolve(
+        clef="treble",
+        staff_top_y=100,
+        line_spacing=10,
+        key_signature="G",
+        measure_id="bar-12",
+        notes=notes,
+        accidentals=accidentals,
+        stems=stems,
+    )
+    print(result["notes"])
+    print(result["accidental_associations"])
+    print(result["visual_guidance"])
+```
+
+### Accidental-to-note assignment
+
+Accidental association uses page geometry, not harmony as a hard rule. Candidate noteheads must be to the right of the accidental glyph and within a staff-spacing-based vertical/horizontal window. Candidates are ranked by vertical anchor distance, with horizontal distance as a weaker tie-breaker.
+
+- A clear geometric winner is assigned.
+- If two noteheads have similar geometric scores (for example, the accidental glyph overlaps two staff positions), the result is `ambiguous`; both candidate noteheads are returned for visual reinspection.
+- If no notehead fits the association window, the accidental is `orphan`.
+- The engine never assigns an accidental merely because doing so would make a chord more consonant.
+
+A new `resolve()` request represents a new measure and starts with an empty local accidental register. Within a measure, a uniquely assigned accidental affects subsequent occurrences of the same letter and octave. Key-signature defaults apply when no local accidental is active.
+
+### Important scope and notation limits
+
+This is a geometry-and-pitch context module, not a complete notation interpreter. It currently models one staff/voice and one measure per request. It does not yet handle cross-barline ties, octave-transposing clefs/instruments, ottava lines, microtonal accidentals, historical key signatures, multi-staff grand-staff accidental policy, or full chord-voice separation.
+
+Stem checks validate the stem's attachment to the appropriate chord anchor notehead. They do not require every notehead in a chord to touch the same stem: chord noteheads are commonly staggered around one shared stem.
+
+Dissonance is reported as musical context for later modules, never used to reject a visually and notationally plausible pitch.
