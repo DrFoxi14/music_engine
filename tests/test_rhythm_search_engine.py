@@ -118,6 +118,110 @@ class RhythmSearchEngineTests(unittest.TestCase):
             self.assertEqual(result["patterns"][0]["events"][0]["duration_whole"], "1/256")
 
 
+    def test_quintuplet_fills_four_four_exactly(self) -> None:
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@4:5:4": 1},
+            kinds=["tuplet"],
+            tuplet_ratios=["5:4"],
+            limit=10,
+        )
+        self.assertEqual(len(result["patterns"]), 1)
+        event = result["patterns"][0]["events"][0]
+        self.assertEqual(event["duration_whole"], "1/1")
+        self.assertEqual(event["tuplet_ratio"], "5:4")
+        self.assertEqual(event["tuplet_slots"], ["note"] * 5)
+        self.assertEqual(event["tuplet_slot_duration_whole"], "1/5")
+        self.assertEqual(result["patterns"][0]["summary"]["tuplet_groups"], 1)
+
+    def test_quadrupet_ratio_four_to_three_in_three_four(self) -> None:
+        with RhythmSearchClient(self.executable, 3, 4, 16) as engine:
+            result = engine.search(
+                "NOTES",
+                exact={"tuplet@4:4:3": 1},
+                tuplet_ratios=["4:3"],
+                limit=5,
+            )
+        self.assertEqual(len(result["patterns"]), 1)
+        event = result["patterns"][0]["events"][0]
+        self.assertEqual(event["tuplet_ratio"], "4:3")
+        self.assertEqual(event["tuplet_slot_duration_whole"], "3/16")
+        self.assertEqual(event["duration_whole"], "3/4")
+
+    def test_sextuplet_ratio_six_to_four(self) -> None:
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@4:6:4": 1},
+            tuplet_ratios=["6:4"],
+            limit=5,
+        )
+        event = result["patterns"][0]["events"][0]
+        self.assertEqual(event["tuplet_ratio"], "6:4")
+        self.assertEqual(event["tuplet_slot_duration_whole"], "1/6")
+        self.assertEqual(len(event["tuplet_slots"]), 6)
+
+    def test_septuplet_ratio_seven_to_four(self) -> None:
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@4:7:4": 1},
+            tuplet_ratios=["7:4"],
+            limit=5,
+        )
+        event = result["patterns"][0]["events"][0]
+        self.assertEqual(event["tuplet_ratio"], "7:4")
+        self.assertEqual(event["tuplet_slot_duration_whole"], "1/7")
+        self.assertEqual(len(event["tuplet_slots"]), 7)
+
+    def test_nonuplet_ratio_nine_to_eight(self) -> None:
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@8:9:8": 1},
+            tuplet_ratios=["9:8"],
+            limit=5,
+        )
+        event = result["patterns"][0]["events"][0]
+        self.assertEqual(event["tuplet_ratio"], "9:8")
+        self.assertEqual(event["tuplet_slot_duration_whole"], "1/9")
+        self.assertEqual(len(event["tuplet_slots"]), 9)
+
+    def test_generic_tuplet_rest_and_note_slot_pattern_filter(self) -> None:
+        result = self.engine.search(
+            "RESTS",
+            exact={"tuplet@4:5:4": 1},
+            tuplet_ratios=["5:4"],
+            tuplet_patterns=["5:4:NNRNN"],
+            limit=5,
+        )
+        self.assertEqual(len(result["patterns"]), 1)
+        event = result["patterns"][0]["events"][0]
+        self.assertEqual(event["tuplet_slots"], ["note", "note", "rest", "note", "note"])
+        self.assertEqual(event["note_slots"], 4)
+        self.assertEqual(event["rest_slots"], 1)
+
+    def test_tuplet_ratio_filter_excludes_other_ratios(self) -> None:
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@4:5:4": 1},
+            tuplet_ratios=["7:4"],
+            limit=5,
+        )
+        self.assertEqual(len(result["patterns"]), 0)
+        self.assertEqual(result["summary"]["truncated"], False)
+
+    def test_legacy_triplet_descriptor_and_pattern_remain_compatible(self) -> None:
+        result = self.engine.search(
+            "RESTS",
+            exact={"triplet@8": 1, "note@2": 1},
+            kinds=["triplet", "note"],
+            triplet_patterns=["NRN"],
+            limit=20,
+        )
+        self.assertGreater(len(result["patterns"]), 0)
+        for pattern in result["patterns"]:
+            event = next(item for item in pattern["events"] if item["kind"] == "triplet")
+            self.assertEqual(event["tuplet_ratio"], "3:2")
+            self.assertEqual(event["triplet_slots"], ["note", "rest", "note"])
+
     def test_contains_kmp_handles_overlapping_prefixes(self) -> None:
         with RhythmSearchClient(self.executable, 4, 4, 16) as engine:
             result = engine.search(
