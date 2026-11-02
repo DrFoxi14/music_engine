@@ -55,6 +55,16 @@ class PitchContextClient:
             raise ValueError(f"{label} may contain only letters, digits, _ and -")
         return text
 
+    @staticmethod
+    def _bool_value(value: Any, label: str) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, str) and value.lower() in ("true", "false", "1", "0"):
+            return value.lower() in ("true", "1")
+        raise ValueError(f"{label} must be a boolean or 0/1")
+
     @classmethod
     def _bbox_fields(cls, bbox: Mapping[str, Any] | None, *, required: bool) -> list[str]:
         if bbox is None:
@@ -142,8 +152,8 @@ class PitchContextClient:
             box = self._bbox_fields(note.get("bbox"), required=False)
             stem_id = self._safe_id(note["stem_id"], "stem_id") if note.get("stem_id") else "-"
             chord_id = self._safe_id(note["chord_id"], "chord_id") if note.get("chord_id") else "-"
-            tie_from_previous = bool(note.get("tie_from_previous", False))
-            tie_to_next = bool(note.get("tie_to_next", False))
+            tie_from_previous = self._bool_value(note.get("tie_from_previous", False), "tie_from_previous")
+            tie_to_next = self._bool_value(note.get("tie_to_next", False), "tie_to_next")
             tie_id = self._safe_id(note["tie_id"], "tie_id") if note.get("tie_id") else "-"
             if (tie_from_previous or tie_to_next) and tie_id == "-":
                 raise ValueError("tie_id is required when tie_from_previous or tie_to_next is true")
