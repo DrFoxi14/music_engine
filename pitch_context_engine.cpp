@@ -736,6 +736,12 @@ public:
                     } else {
                         tieResults[noteIndex].status = "continued_with_cautionary_accidental";
                     }
+                    for (auto& event : tieEvents) {
+                        if (event.type == "incoming" && event.noteId == notes[noteIndex].id) {
+                            event.status = tieResults[noteIndex].status;
+                            event.alteration = tieResults[noteIndex].carriedAlteration;
+                        }
+                    }
                     continue;
                 }
 
