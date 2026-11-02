@@ -776,7 +776,7 @@ public:
                 }
                 resolvedAlteration[noteIndex] = alteration;
                 if (local != localAccidentalRegister.end() &&
-                    alterationSource[noteIndex] != "local_accidental") {
+                    alterationSource[noteIndex] == "key_signature") {
                     alterationSource[noteIndex] = "measure_local_memory";
                 }
 
