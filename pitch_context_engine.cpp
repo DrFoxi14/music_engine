@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <set>
@@ -702,6 +703,23 @@ private:
                     if (j) out << ',';
                     out << '"' << jsonEscape(accidentals[amb->second[j]].id) << '"';
                 }
+            }
+            out << "],\"effective_alteration_options\":[";
+            std::set<int> alterationOptions{alterations[i]};
+            if (amb != ambiguous.end()) {
+                for (size_t accidentalIndex : amb->second)
+                    alterationOptions.insert(accidentalValue(accidentals[accidentalIndex].kind));
+            }
+            size_t optionIndex = 0;
+            for (int option : alterationOptions) {
+                if (optionIndex++) out << ',';
+                out << option;
+            }
+            out << "],\"candidate_midi_pitches\":[";
+            optionIndex = 0;
+            for (int option : alterationOptions) {
+                if (optionIndex++) out << ',';
+                out << midiPitch(p.letter, p.octave, option);
             }
             out << "]}";
         }
