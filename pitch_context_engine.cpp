@@ -563,10 +563,22 @@ std::string boxJson(const Box& box) {
 
 class PitchContextEngine {
 public:
+    void resetTies(const std::string& staffId = "", const std::string& voiceId = "") {
+        if (staffId.empty() && voiceId.empty()) {
+            pendingTies_.clear();
+            return;
+        }
+        const std::string prefix = staffId + "\x1f" + voiceId + "\x1f";
+        for (auto it = pendingTies_.begin(); it != pendingTies_.end();) {
+            if (it->first.rfind(prefix, 0) == 0) it = pendingTies_.erase(it);
+            else ++it;
+        }
+    }
+
     void resolve(const StaffConfig& cfg,
                  const std::vector<NoteInput>& notes,
                  const std::vector<AccidentalInput>& accidentals,
-                 const std::vector<StemInput>& stems) const {
+                 const std::vector<StemInput>& stems) {
         if (cfg.spacing <= 0 || cfg.spacing > 10000)
             throw std::invalid_argument("staff spacing must be positive");
         if (cfg.gridTolerance <= 0 || cfg.gridTolerance > 0.5)
@@ -632,13 +644,68 @@ public:
         std::stable_sort(noteOrder.begin(), noteOrder.end(),
             [&](size_t a, size_t b) { return notes[a].x < notes[b].x; });
 
-        // One request represents one measure. This map is intentionally local:
-        // it is discarded at the end of resolve(), so accidental scope resets
-        // at the next bar/request.
+        // Accidental state is measure-local. Tie carries are separate and
+        // persist across consecutive RESOLVE requests for the same staff/voice.
         std::map<std::string, int> localAccidentalRegister;
         std::vector<int> resolvedAlteration(notes.size(), 0);
         std::vector<bool> alterationCertain(notes.size(), true);
         std::vector<std::string> alterationSource(notes.size(), "key_signature");
+        std::vector<TieNoteResult> tieResults(notes.size());
+        std::vector<TieEvent> tieEvents;
+
+        const std::string contextPrefix = cfg.staffId + "\x1f" + cfg.voiceId + "\x1f";
+        std::map<std::string, TieCarry> incomingTies;
+        for (auto it = pendingTies_.begin(); it != pendingTies_.end();) {
+            if (it->first.rfind(contextPrefix, 0) == 0) {
+                incomingTies[it->second.tieId] = it->second;
+                it = pendingTies_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        std::map<std::string, size_t> incomingTargetCounts;
+        for (const auto& note : notes) {
+            if (note.tieFromPrevious) ++incomingTargetCounts[note.tieId];
+        }
+        std::set<std::string> consumedIncomingTies;
+        for (size_t i = 0; i < notes.size(); ++i) {
+            const NoteInput& note = notes[i];
+            if (!note.tieFromPrevious) continue;
+
+            TieNoteResult& tieResult = tieResults[i];
+            if (incomingTargetCounts[note.tieId] > 1) {
+                tieResult.status = "duplicate_incoming_tie_id";
+                alterationCertain[i] = false;
+                tieEvents.push_back({"incoming", note.tieId, note.id, "", tieResult.status, 99});
+                continue;
+            }
+
+            auto source = incomingTies.find(note.tieId);
+            if (source == incomingTies.end()) {
+                tieResult.status = "missing_source";
+                alterationCertain[i] = false;
+            } else {
+                consumedIncomingTies.insert(note.tieId);
+                tieResult.sourceNoteId = source->second.sourceNoteId;
+                if (positions[i].letter != source->second.letter ||
+                    positions[i].octave != source->second.octave) {
+                    tieResult.status = "pitch_mismatch";
+                    alterationCertain[i] = false;
+                } else {
+                    tieResult.status = "continued";
+                    tieResult.carriedAlteration = source->second.alteration;
+                }
+            }
+            tieEvents.push_back({"incoming", note.tieId, note.id, tieResult.sourceNoteId,
+                                 tieResult.status, tieResult.carriedAlteration});
+        }
+
+        for (const auto& entry : incomingTies) {
+            if (consumedIncomingTies.count(entry.first) != 0) continue;
+            tieEvents.push_back({"incoming_unmatched", entry.first, "", entry.second.sourceNoteId,
+                                 "target_not_detected_in_next_measure", entry.second.alteration});
+        }
 
         size_t cursor = 0;
         while (cursor < noteOrder.size()) {
@@ -654,6 +721,24 @@ public:
                 const size_t noteIndex = noteOrder[p];
                 auto found = attachedAccidentals.find(noteIndex);
                 if (found == attachedAccidentals.end()) continue;
+
+                // A tied continuation inherits only its own source pitch. An
+                // accidental printed on the target is treated as a cautionary
+                // glyph if it agrees; it does not seed the new measure's
+                // accidental register.
+                if (tieResults[noteIndex].status == "continued") {
+                    const bool oneGlyph = found->second.size() == 1;
+                    const int printedAlteration = oneGlyph
+                        ? accidentalValue(accidentals[found->second.front()].kind) : 99;
+                    if (!oneGlyph || printedAlteration != tieResults[noteIndex].carriedAlteration) {
+                        tieResults[noteIndex].status = "accidental_conflict";
+                        alterationCertain[noteIndex] = false;
+                    } else {
+                        tieResults[noteIndex].status = "continued_with_cautionary_accidental";
+                    }
+                    continue;
+                }
+
                 const std::string key = pitchKey(positions[noteIndex].letter, positions[noteIndex].octave);
                 if (found->second.size() > 1) {
                     alterationCertain[noteIndex] = false;
@@ -670,9 +755,14 @@ public:
                 const PitchPosition& position = positions[noteIndex];
                 const std::string keyName = pitchKey(position.letter, position.octave);
                 auto local = localAccidentalRegister.find(keyName);
-                const int alteration = local == localAccidentalRegister.end()
+                int alteration = local == localAccidentalRegister.end()
                     ? key.get(position.letter) : local->second;
 
+                if (tieResults[noteIndex].status == "continued" ||
+                    tieResults[noteIndex].status == "continued_with_cautionary_accidental") {
+                    alteration = tieResults[noteIndex].carriedAlteration;
+                    alterationSource[noteIndex] = "tie_carry";
+                }
                 resolvedAlteration[noteIndex] = alteration;
                 if (local != localAccidentalRegister.end() &&
                     alterationSource[noteIndex] != "local_accidental") {
@@ -683,6 +773,12 @@ public:
                     alterationCertain[noteIndex] = false;
                     alterationSource[noteIndex] = "ambiguous_accidental_assignment";
                 }
+                if (tieResults[noteIndex].status == "missing_source" ||
+                    tieResults[noteIndex].status == "pitch_mismatch" ||
+                    tieResults[noteIndex].status == "accidental_conflict" ||
+                    tieResults[noteIndex].status == "duplicate_incoming_tie_id") {
+                    alterationCertain[noteIndex] = false;
+                }
                 if (!position.onGrid) {
                     alterationCertain[noteIndex] = false;
                     if (alterationSource[noteIndex] == "key_signature")
@@ -690,6 +786,48 @@ public:
                 }
             }
             cursor = end;
+        }
+
+        // Outgoing ties are committed only after their source pitch has been
+        // resolved with sufficient certainty. A tie chain can consume an
+        // incoming carry and emit a new one with the same tie_id.
+        std::map<std::string, std::vector<size_t>> outgoingTieGroups;
+        for (size_t i = 0; i < notes.size(); ++i) {
+            if (notes[i].tieToNext) outgoingTieGroups[notes[i].tieId].push_back(i);
+        }
+        for (const auto& group : outgoingTieGroups) {
+            if (group.second.size() > 1) {
+                for (size_t noteIndex : group.second) {
+                    tieResults[noteIndex].status = "duplicate_outgoing_tie_id";
+                    alterationCertain[noteIndex] = false;
+                    tieEvents.push_back({"outgoing", group.first, notes[noteIndex].id, "",
+                                         "duplicate_outgoing_tie_id", 99});
+                }
+                continue;
+            }
+
+            const size_t noteIndex = group.second.front();
+            if (!alterationCertain[noteIndex] || !positions[noteIndex].onGrid) {
+                tieResults[noteIndex].status = "source_pitch_uncertain";
+                tieEvents.push_back({"outgoing", group.first, notes[noteIndex].id, "",
+                                     "source_pitch_uncertain", 99});
+                continue;
+            }
+
+            TieCarry carry;
+            carry.tieId = group.first;
+            carry.sourceNoteId = notes[noteIndex].id;
+            carry.sourceMeasureId = cfg.measureId;
+            carry.letter = positions[noteIndex].letter;
+            carry.octave = positions[noteIndex].octave;
+            carry.alteration = resolvedAlteration[noteIndex];
+            pendingTies_[contextPrefix + group.first] = carry;
+            tieResults[noteIndex].status =
+                tieResults[noteIndex].status == "continued" ||
+                tieResults[noteIndex].status == "continued_with_cautionary_accidental"
+                    ? tieResults[noteIndex].status + "_and_relayed" : "pending_next_measure";
+            tieEvents.push_back({"outgoing", group.first, notes[noteIndex].id, "",
+                                 "pending_next_measure", carry.alteration});
         }
 
         std::vector<StemCheck> stemChecks;
@@ -704,14 +842,29 @@ public:
             if (s.status == "needs_visual_review" || s.status == "orphan_stem" ||
                 s.status == "chord_group_mismatch") reviewRequired = true;
         if (!missingStemNotes.empty() || !multipleStemChords.empty()) reviewRequired = true;
+        for (const auto& tie : tieEvents) {
+            if (tie.status != "continued" && tie.status != "continued_with_cautionary_accidental" &&
+                tie.status != "pending_next_measure" && tie.status != "incoming_unmatched") {
+                reviewRequired = true;
+            }
+            if (tie.type == "incoming_unmatched" ||
+                tie.status == "missing_source" || tie.status == "pitch_mismatch" ||
+                tie.status == "accidental_conflict" || tie.status == "duplicate_incoming_tie_id" ||
+                tie.status == "duplicate_outgoing_tie_id" || tie.status == "source_pitch_uncertain") {
+                reviewRequired = true;
+            }
+        }
 
         emitJson(cfg, key, notes, accidentals, stems, positions, associations,
                  stemChecks, missingStemNotes, multipleStemChords,
+                 tieResults, tieEvents,
                  resolvedAlteration, alterationCertain, alterationSource,
                  attachedAccidentals, ambiguousAccidentals, reviewRequired);
     }
 
 private:
+    std::map<std::string, TieCarry> pendingTies_;
+
     void emitJson(const StaffConfig& cfg, const KeySignature& key,
                   const std::vector<NoteInput>& notes,
                   const std::vector<AccidentalInput>& accidentals,
@@ -721,6 +874,8 @@ private:
                   const std::vector<StemCheck>& stemChecks,
                   const std::vector<size_t>& missingStemNotes,
                   const std::vector<std::string>& multipleStemChords,
+                  const std::vector<TieNoteResult>& tieResults,
+                  const std::vector<TieEvent>& tieEvents,
                   const std::vector<int>& alterations,
                   const std::vector<bool>& alterationCertain,
                   const std::vector<std::string>& alterationSource,
