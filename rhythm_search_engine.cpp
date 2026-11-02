@@ -746,6 +746,10 @@ private:
                 if (it == remainingExact_.end() || it->second <= 0) return false;
             }
             if (chosen_.empty() && !f_.first.empty() && event.key() != f_.first) return false;
+            // The prefix is known from the start: a branch that leaves it can never match, so it is
+            // cut here instead of being enumerated to the end of the measure (a RESTS query with a
+            // two-event prefix used to exhaust 10M nodes without reaching the answer).
+            if (chosen_.size() < f_.prefix.size() && event.key() != f_.prefix[chosen_.size()]) return false;
             return true;
         }
 

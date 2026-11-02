@@ -86,6 +86,22 @@ class RhythmSearchEngineTests(unittest.TestCase):
         )
         self.assertEqual(len(contains["patterns"]), 2)
 
+    def test_known_beginning_asks_what_can_follow(self) -> None:
+        # the vision engine has read a quarter and a half and sees one more notehead:
+        # only one more quarter fits (OMR dialogue, IDSR)
+        notes = self.engine.search(
+            "NOTES", prefix=["note@4", "note@2"], min_events=3, max_events=3, max_note_slots=3, limit=10
+        )
+        self.assertEqual([[e["descriptor"] for e in p["events"]] for p in notes["patterns"]],
+                         [["note@4", "note@2", "note@4"]])
+        # no notehead there: the prefix is enforced while searching, so a rest is found at once
+        rests = self.engine.search(
+            "RESTS", prefix=["note@4", "note@2"], min_events=3, max_events=3, max_note_slots=2, limit=10
+        )
+        self.assertFalse(rests["summary"]["truncated"])
+        self.assertIn(["note@4", "note@2", "rest@4"], [[e["descriptor"] for e in p["events"]] for p in rests["patterns"]])
+        self.assertLess(rests["summary"]["nodes_visited"], 1000)
+
     def test_page_limit_reports_more_results(self) -> None:
         result = self.engine.search("NOTES", exact={"note@2": 1, "note@4": 2}, limit=1)
         self.assertEqual(len(result["patterns"]), 1)
