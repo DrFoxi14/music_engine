@@ -250,7 +250,7 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
     if (auto it = args.find("kinds"); it != args.end()) {
         for (auto k : split(it->second, ',')) f.kinds.insert(lower(k));
         static const std::set<std::string> valid{
-            "note", "dotted_note", "rest", "dotted_rest", "triplet", "measure_rest"
+            "note", "dotted_note", "rest", "dotted_rest", "triplet", "tuplet", "measure_rest"
         };
         for (const auto& k : f.kinds) if (!valid.count(k)) throw std::invalid_argument("unknown kind: " + k);
     }
