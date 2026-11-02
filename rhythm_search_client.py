@@ -18,6 +18,7 @@ class RhythmSearchClient:
         "min_triplets", "max_triplets", "min_dotted", "max_dotted",
         "min_rest_slots", "max_rest_slots", "min_note_slots", "max_note_slots",
         "min_event_ticks", "max_event_ticks", "durations", "triplet_patterns",
+        "tuplet_patterns", "tuplet_ratios",
         "kinds", "denominators", "subdivisions", "exact", "first", "last",
         "prefix", "suffix", "contains",
     }
@@ -64,7 +65,7 @@ class RhythmSearchClient:
                 raise TypeError("exact must be a mapping like {'note@2': 1} or a string")
         elif key in {"prefix", "suffix", "contains"}:
             encoded = ">".join(str(item) for item in value) if not isinstance(value, str) else value
-        elif key in {"durations", "triplet_patterns", "kinds", "denominators", "subdivisions"}:
+        elif key in {"durations", "triplet_patterns", "tuplet_patterns", "tuplet_ratios", "kinds", "denominators", "subdivisions"}:
             encoded = ",".join(str(item) for item in value) if not isinstance(value, str) else value
         else:
             encoded = str(value)
