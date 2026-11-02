@@ -817,7 +817,7 @@ int main(int argc, char** argv) {
                           << "\"filters\":[\"limit\",\"offset\",\"max_nodes\",\"min_events\",\"max_events\","
                           << "\"min_triplets\",\"max_triplets\",\"min_dotted\",\"max_dotted\","
                           << "\"min_rest_slots\",\"max_rest_slots\",\"min_note_slots\",\"max_note_slots\","
-                          << "\"min_event_ticks\",\"max_event_ticks\",\"durations\",\"triplet_patterns\",\"kinds\",\"denominators\",\"subdivisions\",\"exact\","
+                          << "\"min_event_ticks\",\"max_event_ticks\",\"durations\",\"triplet_patterns\",\"tuplet_patterns\",\"tuplet_ratios\",\"kinds\",\"denominators\",\"subdivisions\",\"exact\","
                           << "\"first\",\"last\",\"prefix\",\"suffix\",\"contains\"]}\n" << std::flush;
                 continue;
             }
