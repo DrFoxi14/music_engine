@@ -118,5 +118,25 @@ class RhythmSearchEngineTests(unittest.TestCase):
             self.assertEqual(result["patterns"][0]["events"][0]["duration_whole"], "1/256")
 
 
+    def test_contains_kmp_handles_overlapping_prefixes(self) -> None:
+        with RhythmSearchClient(self.executable, 4, 4, 16) as engine:
+            result = engine.search(
+                "NOTES",
+                exact={"note@8": 6, "note@4": 1},
+                contains=["note@8", "note@8", "note@4"],
+                limit=20,
+                max_nodes=10000,
+            )
+            self.assertFalse(result["summary"]["truncated"])
+            self.assertEqual(len(result["patterns"]), 5)
+            for pattern in result["patterns"]:
+                descriptors = [event["descriptor"] for event in pattern["events"]]
+                self.assertTrue(any(
+                    descriptors[i:i + 3] == ["note@8", "note@8", "note@4"]
+                    for i in range(len(descriptors) - 2)
+                ))
+
+
+
 if __name__ == "__main__":
     unittest.main()
