@@ -92,13 +92,18 @@ struct Event {
     uint64_t ticks = 0;          // Exact duration on the engine's integer grid.
     int durationNum = 1;         // Duration measured in whole notes.
     int durationDen = 1;
-    std::array<bool, 3> tripletSlots{{true, true, true}};
+    std::vector<bool> tupletSlots{true, true, true};
     int noteSlots = 1;
     int restSlots = 0;
     std::string label;
+    int actualCount = 0;
+    int normalCount = 0;
 
     std::string key() const {
-        return kind + "@" + std::to_string(denominator);
+        std::string result = kind + "@" + std::to_string(denominator);
+        if (kind == "tuplet")
+            result += ":" + std::to_string(actualCount) + ":" + std::to_string(normalCount);
+        return result;
     }
 };
 
@@ -125,11 +130,25 @@ std::string reducedFraction(int n, int d) {
 std::string descriptor(const std::string& raw) {
     const auto p = raw.find('@');
     if (p == std::string::npos || p == 0 || p + 1 >= raw.size())
-        throw std::invalid_argument("descriptor must look like note@4 or triplet@8");
+        throw std::invalid_argument("descriptor must look like note@4, triplet@8, or tuplet@8:5:4");
     const std::string kind = lower(raw.substr(0, p));
-    const uint64_t den = parseU64(raw.substr(p + 1), "descriptor denominator");
+    const std::string payload = raw.substr(p + 1);
+    if (kind == "tuplet") {
+        const auto fields = split(payload, ':');
+        if (fields.size() != 3)
+            throw std::invalid_argument("tuplet descriptor must look like tuplet@8:5:4");
+        const uint64_t den = parseU64(fields[0], "tuplet denominator");
+        const uint64_t actual = parseU64(fields[1], "tuplet actual count");
+        const uint64_t normal = parseU64(fields[2], "tuplet normal count");
+        if (den == 0 || den > 256 || !isPowerOfTwo(static_cast<int>(den)))
+            throw std::invalid_argument("tuplet denominator must be a power of two <= 256");
+        if (actual < 3 || actual > 9 || normal < 1 || normal > 16)
+            throw std::invalid_argument("tuplet counts must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
+        return "tuplet@" + std::to_string(den) + ":" + std::to_string(actual) + ":" + std::to_string(normal);
+    }
+    const uint64_t den = parseU64(payload, "descriptor denominator");
     static const std::set<std::string> valid{
-        "note", "dotted_note", "rest", "dotted_rest", "triplet", "measure_rest"
+        "note", "dotted_note", "rest", "dotted_rest", "triplet", "tuplet", "measure_rest"
     };
     if (!valid.count(kind)) throw std::invalid_argument("unknown event kind in descriptor: " + kind);
     if (kind == "measure_rest") {
@@ -160,6 +179,8 @@ struct Filter {
     uint64_t maxEventTicks = UINT64_MAX;
     std::set<std::string> durations;
     std::set<std::string> tripletPatterns;
+    std::set<std::string> tupletPatterns;
+    std::set<std::string> tupletRatios;
     std::set<std::string> kinds;
     std::set<int> denominators;
     std::map<std::string, int> exact;
@@ -276,6 +297,30 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
             f.tripletPatterns.insert(pattern);
         }
     }
+    if (auto it = args.find("tuplet_ratios"); it != args.end()) {
+        for (const auto& ratio : split(it->second, ',')) {
+            const auto parts = split(ratio, ':');
+            if (parts.size() != 2) throw std::invalid_argument("tuplet_ratios must look like 5:4,6:4,7:4");
+            const uint64_t actual = parseU64(parts[0], "tuplet actual count");
+            const uint64_t normal = parseU64(parts[1], "tuplet normal count");
+            if (actual < 3 || actual > 9 || normal < 1 || normal > 16)
+                throw std::invalid_argument("tuplet ratio must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
+            f.tupletRatios.insert(std::to_string(actual) + ":" + std::to_string(normal));
+        }
+    }
+    if (auto it = args.find("tuplet_patterns"); it != args.end()) {
+        for (auto pattern : split(upper(it->second), ',')) {
+            const auto parts = split(pattern, ':');
+            if (parts.size() != 3 || parts[2].size() != parseU64(parts[0], "tuplet pattern actual count") ||
+                parts[2].find_first_not_of("NR") != std::string::npos)
+                throw std::invalid_argument("tuplet_patterns must look like 5:4:NNRNN or 7:4:NNRNNRN");
+            const uint64_t actual = parseU64(parts[0], "tuplet pattern actual count");
+            const uint64_t normal = parseU64(parts[1], "tuplet pattern normal count");
+            if (actual < 3 || actual > 9 || normal < 1 || normal > 16)
+                throw std::invalid_argument("tuplet pattern ratio out of range");
+            f.tupletPatterns.insert(std::to_string(actual) + ":" + std::to_string(normal) + ":" + parts[2]);
+        }
+    }
     if (auto it = args.find("first"); it != args.end()) f.first = descriptor(it->second);
     if (auto it = args.find("last"); it != args.end()) f.last = descriptor(it->second);
     if (auto it = args.find("prefix"); it != args.end()) parseSequence(it->second, f.prefix);
@@ -287,6 +332,7 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
         "min_triplets", "max_triplets", "min_dotted", "max_dotted",
         "min_rest_slots", "max_rest_slots", "min_note_slots", "max_note_slots",
         "min_event_ticks", "max_event_ticks", "durations", "triplet_patterns",
+        "tuplet_patterns", "tuplet_ratios",
         "kinds", "denominators", "subdivisions", "exact",
         "first", "last", "prefix", "suffix", "contains"
     };
@@ -299,7 +345,7 @@ class SearchEngine {
 public:
     SearchEngine(int numerator, int denominator, int maxDenominator)
         : numerator_(numerator), denominator_(denominator), maxDenominator_(maxDenominator),
-          ticksPerWhole_(static_cast<uint64_t>(6) * maxDenominator) {
+          ticksPerWhole_(static_cast<uint64_t>(2520) * maxDenominator) {
         if (numerator_ < 1 || numerator_ > 10000) throw std::invalid_argument("numerator must be 1..10000");
         if (!isPowerOfTwo(denominator_) || denominator_ > maxDenominator_)
             throw std::invalid_argument("meter denominator must be a power of two <= max note denominator");
@@ -310,7 +356,7 @@ public:
         if (scaled % static_cast<uint64_t>(denominator_) != 0)
             throw std::invalid_argument("meter cannot be represented exactly on selected time grid");
         targetTicks_ = scaled / static_cast<uint64_t>(denominator_);
-        if (targetTicks_ > 2000000) throw std::invalid_argument("meter too large for this search grid");
+        if (targetTicks_ > 50000000) throw std::invalid_argument("meter too large for this search grid");
 
         buildEvents();
     }
@@ -348,31 +394,54 @@ private:
         for (int d = 1; d <= maxDenominator_; d *= 2) {
             const uint64_t normalTicks = ticksPerWhole_ / static_cast<uint64_t>(d);
             const uint64_t dottedTicks = (3 * ticksPerWhole_) / (2 * static_cast<uint64_t>(d));
-            const uint64_t tripletTicks = (2 * ticksPerWhole_) / static_cast<uint64_t>(d);
             const std::string name = noteName(d);
 
-            out.push_back(Event{"note", d, normalTicks, 1, d, {{true,true,true}}, 1, 0, name});
-            out.push_back(Event{"dotted_note", d, dottedTicks, 3, 2*d, {{true,true,true}}, 1, 0,
+            out.push_back(Event{"note", d, normalTicks, 1, d, {true}, 1, 0, name});
+            out.push_back(Event{"dotted_note", d, dottedTicks, 3, 2*d, {true}, 1, 0,
                                 name + " dotted"});
 
             if (includeRests) {
-                out.push_back(Event{"rest", d, normalTicks, 1, d, {{false,false,false}}, 0, 1,
+                out.push_back(Event{"rest", d, normalTicks, 1, d, {false}, 0, 1,
                                     "rest of " + name});
-                out.push_back(Event{"dotted_rest", d, dottedTicks, 3, 2*d, {{false,false,false}}, 0, 1,
+                out.push_back(Event{"dotted_rest", d, dottedTicks, 3, 2*d, {false}, 0, 1,
                                     "dotted rest of " + name});
             }
 
-            const int firstMask = includeRests ? 0 : 7;
-            for (int mask = firstMask; mask <= 7; ++mask) {
-                std::array<bool,3> slots{{bool(mask & 1), bool(mask & 2), bool(mask & 4)}};
-                const int notes = int(slots[0]) + int(slots[1]) + int(slots[2]);
-                const int rests = 3 - notes;
-                if (includeRests && rests == 0) continue; // NNN is in NOTES category.
-                std::ostringstream label;
-                label << "triplet(";
-                for (int i=0;i<3;++i) { if (i) label << ','; label << (slots[i] ? "note" : "rest"); }
-                label << ") of " << name;
-                out.push_back(Event{"triplet", d, tripletTicks, 2, d, slots, notes, rests, label.str()});
+            const std::vector<std::pair<int,int>> ratios{{3,2},{4,3},{5,4},{6,4},{7,4},{9,8}};
+            for (const auto& ratio : ratios) {
+                const int actual = ratio.first;
+                const int normal = ratio.second;
+                const uint64_t groupTicks =
+                    (static_cast<uint64_t>(normal) * ticksPerWhole_) / static_cast<uint64_t>(d);
+                const int firstMask = includeRests ? 0 : ((1 << actual) - 1);
+                const int lastMask = (1 << actual) - 1;
+                for (int mask = firstMask; mask <= lastMask; ++mask) {
+                    std::vector<bool> slots;
+                    slots.reserve(static_cast<size_t>(actual));
+                    int notes = 0;
+                    for (int slot = 0; slot < actual; ++slot) {
+                        const bool isNote = (mask & (1 << slot)) != 0;
+                        slots.push_back(isNote);
+                        notes += isNote ? 1 : 0;
+                    }
+                    const int rests = actual - notes;
+                    if (includeRests && rests == 0) continue;
+                    std::ostringstream label;
+                    const bool isTriplet = actual == 3 && normal == 2;
+                    if (isTriplet) label << "triplet(";
+                    else label << "tuplet " << actual << ":" << normal << "(";
+                    for (int i = 0; i < actual; ++i) {
+                        if (i) label << ',';
+                        label << (slots[static_cast<size_t>(i)] ? "note" : "rest");
+                    }
+                    label << ") of " << name;
+                    Event event{
+                        isTriplet ? "triplet" : "tuplet", d, groupTicks, normal, d,
+                        slots, notes, rests, label.str(), actual, normal
+                    };
+                    out.push_back(std::move(event));
+                }
+            }
             }
             if (d > maxDenominator_ / 2) break;
         }
@@ -389,7 +458,7 @@ private:
             if (a.ticks != b.ticks) return a.ticks > b.ticks;
             if (a.kind != b.kind) return a.kind < b.kind;
             if (a.denominator != b.denominator) return a.denominator < b.denominator;
-            return a.tripletSlots < b.tripletSlots;
+            return a.tupletSlots < b.tupletSlots;
         };
         std::stable_sort(noteEvents_.begin(), noteEvents_.end(), order);
         std::stable_sort(restEvents_.begin(), restEvents_.end(), order);
