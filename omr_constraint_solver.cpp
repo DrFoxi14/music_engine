@@ -1,9 +1,11 @@
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -166,30 +168,27 @@ InputEvent parseEvent(const std::string& token, uint64_t ticksPerWhole) {
 }
 
 std::vector<std::string> suggestedChecks(const std::vector<Rational>& durations) {
-    bool halfQuarter = false;
-    bool quarterEighth = false;
-    bool eighthSixteenth = false;
-    bool dottedPair = false;
+    std::set<std::string> values;
+    for (const auto& duration : durations) values.insert(duration.str());
 
+    std::vector<std::string> checks;
+    if (values.count("1/2") && values.count("1/4"))
+        checks.push_back("notehead_fill");
+    if ((values.count("1/4") && values.count("1/8")) ||
+        (values.count("1/8") && values.count("1/16")) ||
+        (values.count("1/16") && values.count("1/32")))
+        checks.push_back("flag_or_beam_count");
+
+    bool dottedPair = false;
     for (size_t i = 0; i < durations.size(); ++i) {
         for (size_t j = i + 1; j < durations.size(); ++j) {
-            const Rational a = durations[i];
-            const Rational b = durations[j];
-            const uint64_t left = a.n * b.d;
-            const uint64_t right = b.n * a.d;
+            const uint64_t left = durations[i].n * durations[j].d;
+            const uint64_t right = durations[j].n * durations[i].d;
             const uint64_t lo = std::min(left, right);
             const uint64_t hi = std::max(left, right);
-
-            if ((lo == 1 && hi == 2) && a.d * b.d == 8) halfQuarter = true;
-            if ((lo == 1 && hi == 2) && a.d * b.d == 32) quarterEighth = true;
-            if ((lo == 1 && hi == 2) && a.d * b.d == 128) eighthSixteenth = true;
             if (lo * 2 == hi * 3) dottedPair = true;
         }
     }
-
-    std::vector<std::string> checks;
-    if (halfQuarter) checks.push_back("notehead_fill");
-    if (quarterEighth || eighthSixteenth) checks.push_back("flag_or_beam_count");
     if (dottedPair) checks.push_back("augmentation_dot");
     if (checks.empty()) checks.push_back("reinspect_symbol_and_local_context");
     return checks;
@@ -210,6 +209,7 @@ public:
             maxDenominator_ < 2 || maxDenominator_ > 256)
             throw std::invalid_argument("max denominator must be a power of two from 2 to 256");
         if (events_.empty()) throw std::invalid_argument("at least one event is required");
+        if (events_.size() > 2048) throw std::invalid_argument("at most 2048 ordered events are supported");
 
         const uint64_t scaled = static_cast<uint64_t>(numerator_) * ticksPerWhole_;
         if (scaled % static_cast<uint64_t>(denominator_) != 0)
@@ -291,13 +291,28 @@ public:
             out << "],\"eliminated_candidates\":[";
             bool first = true;
             for (size_t c = 0; c < support_[i].size(); ++c) {
-                if (support_[i][c]) continue;
+                // On a truncated search, an unobserved candidate is unverified,
+                // not disproven. Never expose partial search coverage as certainty.
+                if (support_[i][c] || truncated_) continue;
                 if (!first) out << ',';
                 first = false;
                 out << '"' << events_[i].candidates[c].duration.str() << '"';
             }
-            out << "],\"suggested_visual_checks\":[";
-            const auto checks = suggestedChecks(supported);
+            out << "],\"unverified_candidates\":[";
+            first = true;
+            if (truncated_) {
+                for (size_t c = 0; c < support_[i].size(); ++c) {
+                    if (support_[i][c]) continue;
+                    if (!first) out << ',';
+                    first = false;
+                    out << '"' << events_[i].candidates[c].duration.str() << '"';
+                }
+            }
+            out << "],\"support_is_complete\":" << (truncated_ ? "false" : "true");
+            out << ",\"suggested_visual_checks\":[";
+            std::vector<Rational> inputDurations;
+            for (const auto& candidate : events_[i].candidates) inputDurations.push_back(candidate.duration);
+            const auto checks = inputDurations.size() > 1 ? suggestedChecks(inputDurations) : std::vector<std::string>{};
             for (size_t c = 0; c < checks.size(); ++c) {
                 if (c) out << ',';
                 out << '"' << checks[c] << '"';
