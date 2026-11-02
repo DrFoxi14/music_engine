@@ -240,6 +240,9 @@ public:
 
         choices_.resize(events_.size());
         support_.resize(events_.size());
+        for (size_t i = 0; i < events_.size(); ++i) {
+            support_[i].assign(events_[i].candidates.size(), false);
+        }
     }
 
     std::string readyJson() const {
