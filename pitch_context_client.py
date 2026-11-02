@@ -79,6 +79,8 @@ class PitchContextClient:
         line_spacing: float,
         key_signature: str = "C",
         measure_id: str = "0",
+        staff_id: str = "staff0",
+        voice_id: str = "voice0",
         origin_x: float = 0.0,
         staff_slope: float = 0.0,
         notes: Sequence[Mapping[str, Any]],
@@ -93,7 +95,8 @@ class PitchContextClient:
         Notes:
           {"id":"n1", "x":200, "y":120, "confidence":0.99,
            "bbox":{"left":190,"top":115,"right":210,"bottom":125},
-           "stem_id":"s1", "chord_id":"ch1"}
+           "stem_id":"s1", "chord_id":"ch1",
+           "tie_id":"tie-1", "tie_from_previous":False, "tie_to_next":True}
 
         Accidentals:
           {"id":"a1", "kind":"sharp",
@@ -104,7 +107,12 @@ class PitchContextClient:
           {"id":"s1", "chord_id":"ch1", "x":210, "y_top":80,
            "y_bottom":120, "direction":"up"}
 
-        One call is one measure: local accidental state is reset on each call.
+        One call is one measure: local accidental state resets each call.
+        Explicit tie carries persist across calls for the same staff_id/voice_id,
+        provided the same client process is kept alive. tie_id identifies the
+        continuation; use tie_from_previous on the target and tie_to_next on
+        the source. A tie target inherits only its tied pitch, not measure-wide
+        accidental state.
         """
         if not notes:
             raise ValueError("at least one note is required")
@@ -118,6 +126,8 @@ class PitchContextClient:
             f"slope={self._number(staff_slope, 'staff_slope')}",
             f"key={self._safe_id(key_signature, 'key_signature')}",
             f"measure={self._safe_id(measure_id, 'measure_id')}",
+            f"staff={self._safe_id(staff_id, 'staff_id')}",
+            f"voice={self._safe_id(voice_id, 'voice_id')}",
             f"grid_tolerance={self._number(grid_tolerance, 'grid_tolerance')}",
             f"association_margin={self._number(association_margin, 'association_margin')}",
             f"association_max_cost={self._number(association_max_cost, 'association_max_cost')}",
@@ -132,12 +142,19 @@ class PitchContextClient:
             box = self._bbox_fields(note.get("bbox"), required=False)
             stem_id = self._safe_id(note["stem_id"], "stem_id") if note.get("stem_id") else "-"
             chord_id = self._safe_id(note["chord_id"], "chord_id") if note.get("chord_id") else "-"
+            tie_from_previous = bool(note.get("tie_from_previous", False))
+            tie_to_next = bool(note.get("tie_to_next", False))
+            tie_id = self._safe_id(note["tie_id"], "tie_id") if note.get("tie_id") else "-"
+            if (tie_from_previous or tie_to_next) and tie_id == "-":
+                raise ValueError("tie_id is required when tie_from_previous or tie_to_next is true")
             fields = [
                 note_id,
                 self._number(note["x"], "note.x"),
                 self._number(note["y"], "note.y"),
                 self._number(note.get("confidence", 1.0), "note.confidence"),
                 box[0], box[1], box[2], box[3], stem_id, chord_id,
+                tie_id, "1" if tie_from_previous else "0",
+                "1" if tie_to_next else "0",
             ]
             tokens.append("note=" + ",".join(fields))
 
@@ -191,6 +208,35 @@ class PitchContextClient:
 
         if result.get("type") == "error":
             raise ValueError(result.get("message", "Pitch context engine error."))
+        return result
+
+    def reset_ties(self, *, staff_id: str | None = None, voice_id: str | None = None) -> dict[str, Any]:
+        """Reset pending tie state for one staff/voice, or for the whole engine.
+
+        Provide both staff_id and voice_id to reset one context; omit both to
+        clear every pending tie in this engine process.
+        """
+        if (staff_id is None) != (voice_id is None):
+            raise ValueError("provide both staff_id and voice_id, or neither")
+        command = "RESET_TIES"
+        if staff_id is not None and voice_id is not None:
+            command += (
+                f" staff={self._safe_id(staff_id, 'staff_id')}"
+                f" voice={self._safe_id(voice_id, 'voice_id')}"
+            )
+        with self._lock:
+            if self._process.poll() is not None:
+                raise RuntimeError("Pitch context engine process has stopped.")
+            assert self._process.stdin is not None
+            assert self._process.stdout is not None
+            self._process.stdin.write(command + "\\n")
+            self._process.stdin.flush()
+            line = self._process.stdout.readline()
+            if not line:
+                raise RuntimeError("Pitch context engine closed its response stream.")
+            result = json.loads(line)
+        if result.get("type") == "error":
+            raise ValueError(result.get("message", "Could not reset tie state."))
         return result
 
     def close(self) -> None:
