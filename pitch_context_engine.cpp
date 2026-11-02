@@ -902,7 +902,10 @@ private:
             << "\",\"measure_id\":\"" << jsonEscape(cfg.measureId)
             << "\",\"clef\":\"" << jsonEscape(cfg.clef)
             << "\",\"key_signature\":\"" << jsonEscape(cfg.key)
-            << "\",\"accidental_scope\":\"measure_local_same_letter_and_octave\"";
+            << "\",\"staff_id\":\"" << jsonEscape(cfg.staffId)
+            << "\",\"voice_id\":\"" << jsonEscape(cfg.voiceId)
+            << "\",\"accidental_scope\":\"measure_local_same_letter_and_octave\""
+            << ",\"tie_scope\":\"explicit_tie_id_across_measure_requests\"";
 
         out << ",\"notes\":[";
         for (size_t i = 0; i < notes.size(); ++i) {
@@ -923,7 +926,12 @@ private:
                 << "\",\"midi_pitch\":" << midi
                 << ",\"alteration_source\":\"" << alterationSource[i]
                 << "\",\"pitch_certain\":" << (alterationCertain[i] && p.onGrid ? "true" : "false")
-                << ",\"bbox\":" << boxJson(n.box);
+                << ",\"tie_id\":\"" << jsonEscape(n.tieId)
+                << "\",\"tie_from_previous\":" << (n.tieFromPrevious ? "true" : "false")
+                << ",\"tie_to_next\":" << (n.tieToNext ? "true" : "false")
+                << ",\"tie_status\":\"" << tieResults[i].status
+                << "\",\"tie_source_note_id\":\"" << jsonEscape(tieResults[i].sourceNoteId)
+                << "\",\"bbox\":" << boxJson(n.box);
 
             out << ",\"assigned_accidentals\":[";
             auto a = attached.find(i);
@@ -959,6 +967,21 @@ private:
                 out << midiPitch(p.letter, p.octave, option);
             }
             out << "]}";
+        }
+        out << "],\"tie_events\":[";
+        for (size_t i = 0; i < tieEvents.size(); ++i) {
+            if (i) out << ',';
+            const auto& tie = tieEvents[i];
+            out << "{\"type\":\"" << jsonEscape(tie.type)
+                << "\",\"tie_id\":\"" << jsonEscape(tie.tieId)
+                << "\",\"note_id\":\"" << jsonEscape(tie.noteId)
+                << "\",\"source_note_id\":\"" << jsonEscape(tie.sourceNoteId)
+                << "\",\"status\":\"" << jsonEscape(tie.status) << "\"";
+            if (tie.alteration != 99) {
+                out << ",\"carried_alteration\":" << tie.alteration
+                    << ",\"carried_accidental\":\"" << accidentalName(tie.alteration) << "\"";
+            }
+            out << '}';
         }
         out << "],\"accidental_associations\":[";
 
@@ -1099,6 +1122,19 @@ private:
                 << "\",\"reason\":\"stem_attachment_" << stem.status
                 << "\",\"requested_checks\":[\"stem_x\",\"stem_endpoint\",\"chord_anchor_notehead\"]}";
         }
+        for (const auto& tie : tieEvents) {
+            const bool needsReview = tie.type == "incoming_unmatched" ||
+                tie.status == "missing_source" || tie.status == "pitch_mismatch" ||
+                tie.status == "accidental_conflict" || tie.status == "duplicate_incoming_tie_id" ||
+                tie.status == "duplicate_outgoing_tie_id" || tie.status == "source_pitch_uncertain";
+            if (!needsReview) continue;
+            if (!firstGuidance) out << ',';
+            firstGuidance = false;
+            out << "{\"target\":\"" << jsonEscape(tie.noteId.empty() ? tie.tieId : tie.noteId)
+                << "\",\"reason\":\"tie_" << jsonEscape(tie.status)
+                << "\",\"source_note_id\":\"" << jsonEscape(tie.sourceNoteId)
+                << "\",\"requested_checks\":[\"tie_curve_detection\",\"source_and_target_note_identity\",\"written_accidentals\"]}";
+        }
         for (const auto& flag : chordFlags) {
             if (!firstGuidance) out << ',';
             firstGuidance = false;
@@ -1120,7 +1156,7 @@ private:
                 << ",\"must_not_auto_correct\":true"
                 << ",\"requested_checks\":[\"notehead_staff_positions\",\"accidental_glyphs\",\"key_signature\",\"clef\"]}";
         }
-        out << "],\"scope_note\":\"One staff/voice and one measure per request. Dissonance diagnostics are advisory and never reject or rewrite notes. Ambiguous glyph-to-note assignment is returned for visual review, never guessed.\"}";
+        out << "],\"scope_note\":\"One staff/voice and one measure per request. Local accidental memory resets each measure; explicit tie carries preserve only the tied pitch across the barline. Dissonance diagnostics are advisory and never reject or rewrite notes.\"}";
         std::cout << out.str() << '\n' << std::flush;
     }
 };
