@@ -134,6 +134,8 @@ struct StaffConfig {
     double slope = 0;
     std::string key = "C";
     std::string measureId = "0";
+    std::string staffId = "staff0";
+    std::string voiceId = "voice0";
     double gridTolerance = 0.28;  // fraction of one line-to-line spacing
     double associationMargin = 0.22;
     double associationMaxCost = 0.95;
@@ -147,6 +149,33 @@ struct NoteInput {
     Box box;
     std::string stemId;
     std::string chordId;
+    std::string tieId;
+    bool tieFromPrevious = false;
+    bool tieToNext = false;
+};
+
+struct TieCarry {
+    std::string tieId;
+    std::string sourceNoteId;
+    std::string sourceMeasureId;
+    char letter = 'C';
+    int octave = 4;
+    int alteration = 0;
+};
+
+struct TieNoteResult {
+    std::string status = "none";
+    std::string sourceNoteId;
+    int carriedAlteration = 99;
+};
+
+struct TieEvent {
+    std::string type;
+    std::string tieId;
+    std::string noteId;
+    std::string sourceNoteId;
+    std::string status;
+    int alteration = 99;
 };
 
 struct AccidentalInput {
@@ -345,8 +374,15 @@ std::vector<std::string> splitCsv(const std::string& value, size_t expected, con
     return fields;
 }
 
+bool parseBool(const std::string& value, const std::string& label) {
+    const std::string normalized = lower(value);
+    if (normalized == "1" || normalized == "true" || normalized == "yes") return true;
+    if (normalized == "0" || normalized == "false" || normalized == "no") return false;
+    throw std::invalid_argument(label + " must be true/false or 1/0");
+}
+
 NoteInput parseNote(const std::string& value) {
-    auto f = splitCsv(value, 10, "note");
+    auto f = splitCsv(value, 13, "note");
     NoteInput n;
     n.id = f[0];
     n.x = parseDouble(f[1], "note x");
@@ -361,6 +397,11 @@ NoteInput parseNote(const std::string& value) {
     }
     n.stemId = optionalString(f[8]);
     n.chordId = optionalString(f[9]);
+    n.tieId = optionalString(f[10]);
+    n.tieFromPrevious = parseBool(f[11], "note tie_from_previous");
+    n.tieToNext = parseBool(f[12], "note tie_to_next");
+    if ((n.tieFromPrevious || n.tieToNext) && n.tieId.empty())
+        throw std::invalid_argument("tie_id is required when a note has an incoming or outgoing tie");
     return n;
 }
 
@@ -943,6 +984,8 @@ StaffConfig parseConfig(const std::map<std::string, std::string>& values) {
     cfg.slope = values.count("slope") ? parseDouble(values.at("slope"), "slope") : 0;
     cfg.key = values.count("key") ? values.at("key") : "C";
     cfg.measureId = values.count("measure") ? values.at("measure") : "0";
+    cfg.staffId = values.count("staff") ? values.at("staff") : "staff0";
+    cfg.voiceId = values.count("voice") ? values.at("voice") : "voice0";
     if (values.count("grid_tolerance"))
         cfg.gridTolerance = parseDouble(values.at("grid_tolerance"), "grid_tolerance");
     if (values.count("association_margin"))
