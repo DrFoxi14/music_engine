@@ -370,6 +370,7 @@ public:
             << ",\"target_ticks\":" << targetTicks_
             << ",\"events_notes_only\":" << noteEvents_.size()
             << ",\"events_with_rests\":" << restEvents_.size()
+            << ",\"tuplet_ratio_range\":{\"actual_min\":3,\"actual_max\":9,\"normal_min\":1,\"normal_max\":16}"
             << ",\"protocol\":\"SEARCH|GENERATE category key=value ...\"}";
         return out.str();
     }
@@ -520,7 +521,7 @@ private:
         addCommonEvents(restEvents_, true);
         if (targetTicks_ != ticksPerWhole_) {
             restEvents_.push_back(Event{"measure_rest", 0, targetTicks_, numerator_, denominator_,
-                                        {{false,false,false}}, 0, 1, "full-measure rest"});
+                                        {false,false,false}, 0, 1, "full-measure rest"});
         }
         auto order = [](const Event& a, const Event& b) {
             if (a.ticks != b.ticks) return a.ticks > b.ticks;
