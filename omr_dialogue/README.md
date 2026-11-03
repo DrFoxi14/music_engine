@@ -71,16 +71,16 @@ Each descriptor keeps the visual properties it implies, symbol by symbol. Three 
 5. A triplet mark over fewer than three symbols makes Vision re-examine that region.
 6. After the rhythm is settled, `pitch_context_engine` gives the pitches. Unsure accidentals are re-examined first.
 
-## Results (300 measures, default errors, 3 Nov 2026)
+## Results (300 measures, default errors, 3 Nov 2026; a measure is settled only when its decisive properties are visually confirmed)
 
 | Shortest value | Resolved right: one pass → dialogue | Resolved wrong: one pass → dialogue | Contradiction reported |
 |---|---|---|---|
-| all | 32.0% → 70.7% | 18 → 8 | 78 |
-| 1/4 | 57.9% → 94.7% | 1 → 1 | 1 |
-| 1/8 | 61.2% → 87.5% | 3 → 2 | 8 |
-| 1/16 | 22.1% → 68.4% | 9 → 1 | 29 |
-| 1/32 | 8.7% → 56.5% | 2 → 1 | 18 |
-| 1/64 | 0% → 36.6% | 3 → 3 | 22 |
+| all | 32.0% → 61.7% | 18 → 5 | 73 |
+| 1/4 | 57.9% → 89.5% | 1 → 1 | 1 |
+| 1/8 | 61.2% → 82.5% | 3 → 2 | 8 |
+| 1/16 | 22.1% → 60.0% | 9 → 1 | 29 |
+| 1/32 | 8.7% → 41.3% | 2 → 0 | 17 |
+| 1/64 | 0.0% → 22.0% | 3 → 1 | 18 |
 
 "One pass" means the same adapter and search, with every reported value taken as certain and no question asked.
 
