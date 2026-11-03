@@ -194,6 +194,10 @@ struct Filter {
     std::vector<std::string> prefix;
     std::vector<std::string> suffix;
     std::vector<std::string> contains;
+    // positions: for event i, the descriptors it may be ("*" = anything). A tuplet alternative may
+    // carry its slot mask, "triplet@8#NRN". This is how an OMR adapter states what is visually
+    // certain and what is not, symbol by symbol; the pattern then has exactly this many events.
+    std::vector<std::vector<std::string>> positions;
 };
 
 void parseSequence(const std::string& value, std::vector<std::string>& dest) {
@@ -333,6 +337,30 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
     if (auto it = args.find("prefix"); it != args.end()) parseSequence(it->second, f.prefix);
     if (auto it = args.find("suffix"); it != args.end()) parseSequence(it->second, f.suffix);
     if (auto it = args.find("contains"); it != args.end()) parseSequence(it->second, f.contains);
+    if (auto it = args.find("positions"); it != args.end()) {
+        for (const auto& position : split(it->second, '>')) {
+            std::vector<std::string> alternatives;
+            for (const auto& raw : split(position, '|')) {
+                if (raw == "*") { alternatives.push_back(raw); continue; }
+                const size_t hash = raw.find('#');
+                std::string item = descriptor(raw.substr(0, hash));
+                if (hash != std::string::npos) {
+                    const std::string mask = upper(raw.substr(hash + 1));
+                    if (mask.empty() || mask.find_first_not_of("NR") != std::string::npos)
+                        throw std::invalid_argument("a positions mask uses N/R, e.g. triplet@8#NRN");
+                    item += "#" + mask;
+                }
+                alternatives.push_back(item);
+            }
+            if (alternatives.empty()) throw std::invalid_argument("each position needs at least one descriptor or *");
+            f.positions.push_back(alternatives);
+        }
+        if (f.positions.size() > 2048) throw std::invalid_argument("at most 2048 positions");
+        const int n = static_cast<int>(f.positions.size());
+        if (f.minEvents > n || f.maxEvents < n)
+            throw std::invalid_argument("positions fixes the event count; min_events/max_events contradict it");
+        f.minEvents = f.maxEvents = n;
+    }
 
     static const std::set<std::string> supported{
         "limit", "offset", "max_nodes", "min_events", "max_events",
@@ -341,7 +369,7 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
         "min_event_ticks", "max_event_ticks", "durations", "triplet_patterns",
         "tuplet_patterns", "tuplet_ratios",
         "kinds", "denominators", "subdivisions", "exact",
-        "first", "last", "prefix", "suffix", "contains"
+        "first", "last", "prefix", "suffix", "contains", "positions"
     };
     for (const auto& pair : args)
         if (!supported.count(pair.first)) throw std::invalid_argument("unknown filter: " + pair.first);
@@ -360,6 +388,8 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
     for (const auto& item : f.prefix) registerDescriptorRatio(item);
     for (const auto& item : f.suffix) registerDescriptorRatio(item);
     for (const auto& item : f.contains) registerDescriptorRatio(item);
+    for (const auto& position : f.positions)
+        for (const auto& item : position) registerDescriptorRatio(item.substr(0, item.find('#')));
     return f;
 }
 
@@ -750,6 +780,21 @@ private:
             // cut here instead of being enumerated to the end of the measure (a RESTS query with a
             // two-event prefix used to exhaust 10M nodes without reaching the answer).
             if (chosen_.size() < f_.prefix.size() && event.key() != f_.prefix[chosen_.size()]) return false;
+            if (!f_.positions.empty()) {
+                if (chosen_.size() >= f_.positions.size()) return false;
+                bool allowed = false;
+                for (const auto& item : f_.positions[chosen_.size()]) {
+                    if (item == "*") { allowed = true; break; }
+                    const size_t hash = item.find('#');
+                    if (item.compare(0, hash, event.key()) != 0 || (hash == std::string::npos && item.size() != event.key().size()))
+                        continue;
+                    if (hash == std::string::npos) { allowed = true; break; }
+                    std::string mask;
+                    for (bool slot : event.tupletSlots) mask += slot ? 'N' : 'R';
+                    if (item.substr(hash + 1) == mask) { allowed = true; break; }
+                }
+                if (!allowed) return false;
+            }
             return true;
         }
 

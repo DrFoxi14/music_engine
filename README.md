@@ -81,6 +81,7 @@ All filters are optional unless noted.
 | `first`, `last` | First / last event descriptor | `first=note@2 last=note@4` |
 | `prefix`, `suffix` | Ordered beginning / ending sequence | `prefix=note@2>note@4` |
 | `contains` | Ordered contiguous sequence anywhere in the pattern | `contains=note@2>triplet@8` |
+| `positions` | Allowed descriptors for each event in order (`|` alternatives, `>` next event, `*` anything, `#NRN` a tuplet slot mask); fixes the event count | `positions=note@4>note@2>note@4|note@8` |
 | `limit` | Maximum results returned (1–1000; default 50) | `limit=100` |
 | `offset` | Skip this many matches before returning results | `offset=100` |
 | `max_nodes` | Search work budget (default 200,000; maximum 10,000,000) | `max_nodes=1000000` |
