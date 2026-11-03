@@ -30,6 +30,7 @@ import adapter as A
 LIMIT = 200              # interpretations requested from the search per structure
 MAX_ROUNDS = 40
 MAX_ASKS = 2             # times one property of one symbol may be re-examined
+TRUST_SUM = False        # one interpretation left but Vision disagrees: let the sum decide (status "sum")
 VERIFY = 0.97            # before a measure is settled, decisive properties read with less confidence than
                          # this (and not yet confirmed) are re-examined
 SPACING_ROOM = 0.5       # a gap wider than its durations need by this fraction of the fixed spacing (a)
@@ -249,6 +250,12 @@ class Dialogue:
                             unsure.setdefault(sid, []).append(p)
                         elif not (A.certain(v, c, ok) and v == want):
                             unconfirmed.append([sid, p, v, c])
+                if not unsure and unconfirmed and TRUST_SUM:
+                    # Paul: the sum decides. One interpretation is left; Vision's reading disagrees with it on
+                    # these properties, but the measure's arithmetic allows nothing else
+                    status = "sum"
+                    self.say("dialogue", "output", "sum", round=rnd, overruled=unconfirmed[:12])
+                    break
                 if not unsure and unconfirmed:
                     # musically valid is not visually certain: the reading this interpretation needs was
                     # not confirmed by Vision, so the measure is not settled
