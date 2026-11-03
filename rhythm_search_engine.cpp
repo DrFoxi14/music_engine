@@ -617,6 +617,13 @@ private:
                 maxTicks_ = std::max(maxTicks_, event.ticks);
             }
             if (f_.minRestSlots == 0 && category_ == "RESTS") f_.minRestSlots = 1;
+            // positions: the candidates of each event are known in advance, so each depth of the search
+            // walks only its own short list instead of the whole vocabulary (thousands of tuplet masks)
+            for (size_t i = 0; i < f_.positions.size(); ++i) {
+                byPosition_.emplace_back();
+                for (const Event* event : allowed_)
+                    if (matchesPosition(*event, i)) byPosition_.back().push_back(event);
+            }
             if (!f_.exact.empty()) {
                 exactTicks_ = 0;
                 exactEvents_ = 0;
@@ -652,6 +659,7 @@ private:
         std::string category_;
         Filter f_;
         std::vector<const Event*> allowed_;
+        std::vector<std::vector<const Event*>> byPosition_;
         std::map<std::string,int> remainingExact_;
         uint64_t exactTicks_ = 0;
         int exactEvents_ = 0;
@@ -780,22 +788,23 @@ private:
             // cut here instead of being enumerated to the end of the measure (a RESTS query with a
             // two-event prefix used to exhaust 10M nodes without reaching the answer).
             if (chosen_.size() < f_.prefix.size() && event.key() != f_.prefix[chosen_.size()]) return false;
-            if (!f_.positions.empty()) {
-                if (chosen_.size() >= f_.positions.size()) return false;
-                bool allowed = false;
-                for (const auto& item : f_.positions[chosen_.size()]) {
-                    if (item == "*") { allowed = true; break; }
-                    const size_t hash = item.find('#');
-                    if (item.compare(0, hash, event.key()) != 0 || (hash == std::string::npos && item.size() != event.key().size()))
-                        continue;
-                    if (hash == std::string::npos) { allowed = true; break; }
-                    std::string mask;
-                    for (bool slot : event.tupletSlots) mask += slot ? 'N' : 'R';
-                    if (item.substr(hash + 1) == mask) { allowed = true; break; }
-                }
-                if (!allowed) return false;
-            }
+            if (!f_.positions.empty() && chosen_.size() >= f_.positions.size()) return false;
             return true;
+        }
+
+        bool matchesPosition(const Event& event, size_t position) const {
+            for (const auto& item : f_.positions[position]) {
+                if (item == "*") return true;
+                const size_t hash = item.find('#');
+                const std::string key = event.key();
+                if (item.compare(0, hash, key) != 0 || (hash == std::string::npos && item.size() != key.size()))
+                    continue;
+                if (hash == std::string::npos) return true;
+                std::string mask;
+                for (bool slot : event.tupletSlots) mask += slot ? 'N' : 'R';
+                if (item.substr(hash + 1) == mask) return true;
+            }
+            return false;
         }
 
         bool sequenceAtEnd(const std::vector<std::string>& seq, bool suffix) const {
@@ -899,7 +908,8 @@ private:
                 return;
             }
 
-            for (const Event* event : allowed_) {
+            const std::vector<const Event*>& pool = f_.positions.empty() ? allowed_ : byPosition_[chosen_.size()];
+            for (const Event* event : pool) {
                 if (stopped_) break;
                 if (event->ticks > remainingTicks || !eventAllowed(*event)) continue;
                 if (event->kind == "triplet" && triplets >= f_.maxTriplets) continue;

@@ -1,0 +1,309 @@
+=== measure 2: 3/8, shortest 1/8, resolved (right)
+truth: n1=3/8
+  vision -> dialogue: observation {"symbols": 1, "beam_groups": 0, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["dotted_note@4"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["dots.count", "head.fill"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 1, "confidence": 0.988, "evidence": {"region": [10.0, 95.0, 70.0, 175.0]}}, "head.fill": {"value": "filled", "confidence": 0.966, "evidence": {"region": [10.0, 95.0, 70.0, 175.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["dotted_note@4"]]}
+  dialogue -> pitch: resolve {"notes": 1, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 3: 6/8, shortest 1/8, contradiction
+truth: n1=1/12 r2=1/12 r3=1/12 n4=1/8 n5=1/12 r6=1/12 n7=1/12 n8=1/8
+  vision -> dialogue: observation {"symbols": 7, "beam_groups": 1, "tuplets": 2}
+  dialogue -> vision: examine_region {"round": 1, "reason": "a triplet mark over fewer than three symbols", "request": {"request_id": "q1", "measure_id": "m1", "region": {"x0": 28.0, "x1": 106.0}}}
+  vision -> dialogue: region_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "new_symbols": []}}
+  search -> dialogue: interpretations {"round": 2, "count": 0, "more": false, "sample": []}
+  dialogue -> vision: relook {"round": 2, "reason": "tuplet", "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n1", "r3"], "requested_properties": ["tuplet.number"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"tuplet.number": {"value": 3, "confidence": 0.983, "evidence": {"tuplet": {"id": "t1", "symbol_ids": ["n1", "r3"]}}}}}, {"symbol_id": "r3", "properties": {"tuplet.number": {"value": 3, "confidence": 0.906, "evidence": {"tuplet": {"id": "t1", "symbol_ids": ["n1", "r3"]}}}}}]}}
+  search -> dialogue: interpretations {"round": 3, "count": 0, "more": false, "sample": []}
+  dialogue -> vision: relook {"round": 3, "reason": "tuplet", "request": {"request_id": "q3", "measure_id": "m1", "target_symbol_ids": ["n1", "r3"], "requested_properties": ["tuplet.number"]}}
+  vision -> dialogue: relook_result {"round": 3, "response": {"request_id": "q3", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"tuplet.number": {"value": 3, "confidence": 0.953, "evidence": {"tuplet": {"id": "t1", "symbol_ids": ["n1", "r3"]}}}}}, {"symbol_id": "r3", "properties": {"tuplet.number": {"value": 3, "confidence": 0.88, "evidence": {"tuplet": {"id": "t1", "symbol_ids": ["n1", "r3"]}}}}}]}}
+  search -> dialogue: interpretations {"round": 4, "count": 0, "more": false, "sample": []}
+  dialogue -> output: contradiction_report {"round": 4, "note": "no valid interpretation and nothing left to re-examine", "observations": [["n5", "dots.count", "unknown", 0.377, false], ["n7", "dots.count", 1, 0.819, false]]}
+
+=== measure 4: 3/8, shortest 1/16, resolved (right)
+truth: n1=1/24 r2=1/24 r3=1/24 r4=1/24 n5=1/24 n6=1/24 r7=1/8
+  vision -> dialogue: observation {"symbols": 7, "beam_groups": 1, "tuplets": 2}
+  search -> dialogue: interpretations {"round": 1, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 1, "suspects": [["r7", "dots.count"]]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["r7"], "requested_properties": ["dots.count"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "r7", "properties": {"dots.count": {"value": 0, "confidence": 0.974, "evidence": {"region": [112.0, 80.0, 172.0, 160.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["triplet@16#NRR", "triplet@16#RNN", "rest@8"]]}
+  dialogue -> dialogue: verify {"round": 2, "symbols": ["n1", "r2", "r3", "r4", "n5", "n6", "r7"]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n1", "r2", "r3", "r4", "n5", "n6", "r7"], "requested_properties": ["beam_groups.beam_count", "dots.count", "head.fill", "rest.shape", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 0, "confidence": 0.986, "evidence": {"region": [10.0, 70.0, 70.0, 150.0]}}, "head.fill": {"value": "hollow", "confidence": 0.685, "evidence": {"region": [10.0, 70.0, 70.0, 150.0]}}, "stem.state": {"value": "present", "confidence": 0.917, "evidence": {"region": [1
+  search -> dialogue: interpretations {"round": 3, "count": 1, "more": false, "sample": [["triplet@16#NRR", "triplet@16#RNN", "rest@8"]]}
+  dialogue -> dialogue: verify {"round": 3, "symbols": ["n1"]}
+  dialogue -> vision: relook {"round": 3, "request": {"request_id": "q3", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["head.fill"]}}
+  vision -> dialogue: relook_result {"round": 3, "response": {"request_id": "q3", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"head.fill": {"value": "filled", "confidence": 0.974, "evidence": {"region": [10.0, 70.0, 70.0, 150.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 4, "count": 1, "more": false, "sample": [["triplet@16#NRR", "triplet@16#RNN", "rest@8"]]}
+  dialogue -> vision: examine_region {"round": 4, "reason": "more room than the durations need", "request": {"request_id": "q4", "measure_id": "m1", "region": {"x0": 142.0, "x1": 169.0}}}
+  vision -> dialogue: region_result {"round": 4, "response": {"request_id": "q4", "measure_id": "m1", "new_symbols": []}}
+  search -> dialogue: interpretations {"round": 5, "count": 1, "more": false, "sample": [["triplet@16#NRR", "triplet@16#RNN", "rest@8"]]}
+  dialogue -> pitch: resolve {"notes": 3, "accidentals": 1}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 7: 2/4, shortest 1/8, resolved (right)
+truth: n1=1/8 n2=1/8 n3=1/8 n4=1/8
+  vision -> dialogue: observation {"symbols": 4, "beam_groups": 2, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["note@8", "note@8", "note@8", "note@8"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "n2", "n3", "n4"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "n2", "n3", "n4"], "requested_properties": ["beam_groups.beam_count", "dots.count", "head.fill", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.948, "evidence": {"region": [10.0, 110.0, 70.0, 190.0]}}, "dots.count": {"value": 0, "confidence": 0.997, "evidence": {"region": [10.0, 110.0, 70.0, 190.0]}}, "head.fill": {"value": "filled", "confidence": 0.95, "evidence": {"region
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["note@8", "note@8", "note@8", "note@8"]]}
+  dialogue -> pitch: resolve {"notes": 4, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 8: 2/4, shortest 1/8, resolved (right)
+truth: n1=1/8 n2=1/8 n3=1/12 n4=1/12 n5=1/12
+  vision -> dialogue: observation {"symbols": 5, "beam_groups": 2, "tuplets": 1}
+  search -> dialogue: interpretations {"round": 1, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 1, "suspects": [["n5", "beam_groups.beam_count"], ["n1", "beam_groups.beam_count"], ["n2", "beam_groups.beam_count"], ["n4", "beam_groups.beam_count"]]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n5", "n1", "n2"], "requested_properties": ["beam_groups.beam_count"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n5", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.998, "evidence": {"region": [108.0, 110.0, 168.0, 190.0]}}}}, {"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.93, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}}}, {"symbol_id": "n2", "p
+  search -> dialogue: interpretations {"round": 2, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 2, "suspects": [["n4", "beam_groups.beam_count"]]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n4"], "requested_properties": ["beam_groups.beam_count"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n4", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.98, "evidence": {"region": [86.0, 125.0, 146.0, 205.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 3, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 3, "suspects": [["n1", "beam_groups.beam_count"], ["n2", "beam_groups.beam_count"], ["n4", "beam_groups.beam_count"], ["n5", "beam_groups.beam_count"]]}
+  dialogue -> vision: relook {"round": 3, "request": {"request_id": "q3", "measure_id": "m1", "target_symbol_ids": ["n1", "n2", "n4"], "requested_properties": ["beam_groups.beam_count"]}}
+  vision -> dialogue: relook_result {"round": 3, "response": {"request_id": "q3", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.952, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}}}, {"symbol_id": "n2", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.936, "evidence": {"region": [37.0, 95.0, 97.0, 175.0]}}}}, {"symbol_id": "n4", "pro
+  search -> dialogue: interpretations {"round": 4, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 4, "suspects": [["n5", "beam_groups.beam_count"]]}
+  dialogue -> vision: relook {"round": 4, "request": {"request_id": "q4", "measure_id": "m1", "target_symbol_ids": ["n5"], "requested_properties": ["beam_groups.beam_count"]}}
+  vision -> dialogue: relook_result {"round": 4, "response": {"request_id": "q4", "measure_id": "m1", "results": [{"symbol_id": "n5", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.894, "evidence": {"region": [108.0, 110.0, 168.0, 190.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 5, "count": 0, "more": false, "sample": []}
+  dialogue -> vision: relook {"round": 5, "reason": "tuplet", "request": {"request_id": "q5", "measure_id": "m1", "target_symbol_ids": ["n1", "n2", "n3"], "requested_properties": ["tuplet.member"]}}
+  vision -> dialogue: relook_result {"round": 5, "response": {"request_id": "q5", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"tuplet.member": {"value": false, "confidence": 0.877}}}, {"symbol_id": "n2", "properties": {"tuplet.member": {"value": false, "confidence": 0.953}}}, {"symbol_id": "n3", "properties": {"tuplet.member": {"value": false, "confidence": 0.997}}}]}}
+  search -> dialogue: interpretations {"round": 6, "count": 0, "more": false, "sample": []}
+  dialogue -> vision: relook {"round": 6, "reason": "tuplet", "request": {"request_id": "q6", "measure_id": "m1", "target_symbol_ids": ["n2", "n3", "n4"], "requested_properties": ["tuplet.member"]}}
+  vision -> dialogue: relook_result {"round": 6, "response": {"request_id": "q6", "measure_id": "m1", "results": [{"symbol_id": "n2", "properties": {"tuplet.member": {"value": false, "confidence": 0.953}}}, {"symbol_id": "n3", "properties": {"tuplet.member": {"value": true, "confidence": 0.931, "evidence": {"tuplet": {"id": "t1", "symbol_ids": ["n3", "n4", "n5"]}}}}}, {"symbol_id": "n4", "properties": {"tuplet.member": {"value": tru
+  search -> dialogue: interpretations {"round": 7, "count": 1, "more": false, "sample": [["note@8", "note@8", "triplet@8#NNN"]]}
+  dialogue -> dialogue: verify {"round": 7, "symbols": ["n1", "n2", "n3", "n4", "n5"]}
+  dialogue -> vision: relook {"round": 7, "request": {"request_id": "q7", "measure_id": "m1", "target_symbol_ids": ["n1", "n2", "n3", "n4", "n5"], "requested_properties": ["beam_groups.beam_count", "dots.count", "head.fill", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 7, "response": {"request_id": "q7", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.994, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}, "dots.count": {"value": 0, "confidence": 0.914, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}, "head.fill": {"value": "filled", "confidence": 0.891, "evidence": {"region"
+  search -> dialogue: interpretations {"round": 8, "count": 1, "more": false, "sample": [["note@8", "note@8", "triplet@8#NNN"]]}
+  dialogue -> pitch: resolve {"notes": 5, "accidentals": 2}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 9: 3/8, shortest 1/8, resolved (right)
+truth: n1=3/16 n2=3/16
+  vision -> dialogue: observation {"symbols": 2, "beam_groups": 1, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["dotted_note@8", "dotted_note@8"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "n2"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "n2"], "requested_properties": ["dots.count", "head.fill", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 1, "confidence": 0.944, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}, "head.fill": {"value": "filled", "confidence": 0.998, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}, "stem.state": {"value": "present", "confidence": 0.964, "evidence": {"region": [1
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["dotted_note@8", "dotted_note@8"]]}
+  dialogue -> pitch: resolve {"notes": 2, "accidentals": 1}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 11: 4/4, shortest 1/8, resolved (right)
+truth: n1=1/12 n2=1/12 n3=1/12 n4=1/8 r5=1/8 r6=3/8 n7=1/8
+  vision -> dialogue: observation {"symbols": 7, "beam_groups": 1, "tuplets": 1}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["triplet@8#NNN", "note@8", "rest@8", "dotted_rest@4", "note@8"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "n2", "n3", "n4", "r6", "n7"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "n2", "n3", "n4", "r6", "n7"], "requested_properties": ["beam_groups.beam_count", "dots.count", "head.fill", "rest.shape", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.957, "evidence": {"region": [10.0, 110.0, 70.0, 190.0]}}, "dots.count": {"value": 0, "confidence": 0.942, "evidence": {"region": [10.0, 110.0, 70.0, 190.0]}}, "head.fill": {"value": "filled", "confidence": 0.962, "evidence": {"regio
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["triplet@8#NNN", "note@8", "rest@8", "dotted_rest@4", "note@8"]]}
+  dialogue -> dialogue: verify {"round": 2, "symbols": ["n2", "n4"]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n2", "n4"], "requested_properties": ["beam_groups.beam_count", "dots.count"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n2", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.993, "evidence": {"region": [32.0, 125.0, 92.0, 205.0]}}, "dots.count": {"value": 0, "confidence": 0.98, "evidence": {"region": [32.0, 125.0, 92.0, 205.0]}}}}, {"symbol_id": "n4", "properties": {"dots.count": {"value": 0, "confidenc
+  search -> dialogue: interpretations {"round": 3, "count": 1, "more": false, "sample": [["triplet@8#NNN", "note@8", "rest@8", "dotted_rest@4", "note@8"]]}
+  dialogue -> pitch: resolve {"notes": 5, "accidentals": 2}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 12: 6/8, shortest 1/8, resolved (right)
+truth: n1=1/12 n2=1/12 r3=1/12 r4=1/8 r5=1/8 n6=1/12 r7=1/12 n8=1/12
+  vision -> dialogue: observation {"symbols": 8, "beam_groups": 1, "tuplets": 2}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["triplet@8#NNR", "rest@8", "rest@8", "triplet@8#NRN"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "n2", "r3", "r4", "r5", "n6", "r7", "n8"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "n2", "r3", "r4", "r5", "n6", "r7", "n8"], "requested_properties": ["beam_groups.beam_count", "dots.count", "flags.count", "head.fill", "rest.shape", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": "unknown", "confidence": 0.329, "evidence": {"region": [10.0, 90.0, 70.0, 170.0]}}, "dots.count": {"value": 0, "confidence": 0.92, "evidence": {"region": [10.0, 90.0, 70.0, 170.0]}}, "flags.count": {"value": 0, "confidence": 0.989, "evidence": {"regio
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["triplet@8#NNR", "rest@8", "rest@8", "triplet@8#NRN"]]}
+  dialogue -> dialogue: verify {"round": 2, "symbols": ["n1"]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["beam_groups.beam_count"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.908, "evidence": {"region": [10.0, 90.0, 70.0, 170.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 3, "count": 1, "more": false, "sample": [["triplet@8#NNR", "rest@8", "rest@8", "triplet@8#NRN"]]}
+  dialogue -> pitch: resolve {"notes": 4, "accidentals": 1}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 18: 6/8, shortest 1/8, resolved (right)
+truth: r1=3/16 n2=3/16 r3=1/12 r4=1/12 n5=1/12 r6=1/8
+  vision -> dialogue: observation {"symbols": 6, "beam_groups": 0, "tuplets": 1}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["dotted_rest@8", "dotted_note@8", "triplet@8#RRN", "rest@8"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["r1", "n2", "r3", "r4", "n5", "r6"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["r1", "n2", "r3", "r4", "n5", "r6"], "requested_properties": ["dots.count", "flags.count", "head.fill", "rest.shape", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "r1", "properties": {"dots.count": {"value": 1, "confidence": 0.945, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}, "rest.shape": {"value": "eighth", "confidence": 0.948, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}}}, {"symbol_id": "n2", "properties": {"dots.count": {"value": 1, "confidence": 0.
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["dotted_rest@8", "dotted_note@8", "triplet@8#RRN", "rest@8"]]}
+  dialogue -> pitch: resolve {"notes": 2, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 21: 3/8, shortest 1/8, resolved (right)
+truth: n1=1/8 n2=1/12 n3=1/12 n4=1/12
+  vision -> dialogue: observation {"symbols": 4, "beam_groups": 1, "tuplets": 1}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["note@8", "triplet@8#NNN"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "n2", "n3", "n4"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "n2", "n3", "n4"], "requested_properties": ["beam_groups.beam_count", "dots.count", "head.fill", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": "unknown", "confidence": 0.575, "evidence": {"region": [10.0, 95.0, 70.0, 175.0]}}, "dots.count": {"value": 0, "confidence": 0.946, "evidence": {"region": [10.0, 95.0, 70.0, 175.0]}}, "head.fill": {"value": "filled", "confidence": 0.966, "evidence": {
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["note@8", "triplet@8#NNN"]]}
+  dialogue -> dialogue: verify {"round": 2, "symbols": ["n1"]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["beam_groups.beam_count"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.997, "evidence": {"region": [10.0, 95.0, 70.0, 175.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 3, "count": 1, "more": false, "sample": [["note@8", "triplet@8#NNN"]]}
+  dialogue -> pitch: resolve {"notes": 4, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 25: 4/4, shortest 1/4, resolved (right)
+truth: n1=1/6 r2=1/6 r3=1/6 n4=1/4 r5=1/4
+  vision -> dialogue: observation {"symbols": 5, "beam_groups": 0, "tuplets": 1}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["triplet@4#NRR", "note@4", "rest@4"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "r2", "r3", "n4", "r5"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "r2", "r3", "n4", "r5"], "requested_properties": ["dots.count", "flags.count", "head.fill", "rest.shape"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 0, "confidence": 0.939, "evidence": {"region": [10.0, 85.0, 70.0, 165.0]}}, "flags.count": {"value": 0, "confidence": 0.98, "evidence": {"region": [10.0, 85.0, 70.0, 165.0]}}, "head.fill": {"value": "filled", "confidence": 0.985, "evidence": {"region": [10.0, 85.
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["triplet@4#NRR", "note@4", "rest@4"]]}
+  dialogue -> dialogue: verify {"round": 2, "symbols": ["r3", "n4"]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["r3", "n4"], "requested_properties": ["dots.count"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "r3", "properties": {"dots.count": {"value": 0, "confidence": 0.971, "evidence": {"region": [74.0, 80.0, 134.0, 160.0]}}}}, {"symbol_id": "n4", "properties": {"dots.count": {"value": 0, "confidence": 0.987, "evidence": {"region": [106.0, 100.0, 166.0, 180.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 3, "count": 1, "more": false, "sample": [["triplet@4#NRR", "note@4", "rest@4"]]}
+  dialogue -> pitch: resolve {"notes": 2, "accidentals": 2}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 27: 3/4, shortest 1/4, resolved (right)
+truth: n1=1/2 n2=1/4
+  vision -> dialogue: observation {"symbols": 2, "beam_groups": 0, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["dotted_note@2"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["dots.count", "flags.count", "head.fill"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 0, "confidence": 0.993, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}, "flags.count": {"value": 0, "confidence": 0.864, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}, "head.fill": {"value": "hollow", "confidence": 0.943, "evidence": {"region": [10.0, 80
+  search -> dialogue: interpretations {"round": 2, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 2, "suspects": [["n1", "dots.count"]]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["dots.count"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 0, "confidence": 0.957, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 3, "count": 0, "more": false, "sample": []}
+  dialogue -> vision: examine_region {"round": 3, "reason": "a symbol may be missing here", "request": {"request_id": "q3", "measure_id": "m1", "region": {"x0": 40.0, "x1": 154.0}}}
+  vision -> dialogue: region_result {"round": 3, "response": {"request_id": "q3", "measure_id": "m1", "new_symbols": [{"id": "n2", "type": "note", "staff_id": "st1", "measure_id": "m1", "voice_id": null, "bbox": [106.0, 115.0, 118.0, 125.0], "center": {"x": 112.0, "y": 120.0}, "head": {"fill": "filled", "confidence": 0.972}, "stem": {"state": "present", "confidence": 0.971, "direction": "down", "direction_confidence": 0.959}, "flags
+  search -> dialogue: interpretations {"round": 4, "count": 1, "more": false, "sample": [["note@2", "note@4"]]}
+  dialogue -> pitch: resolve {"notes": 2, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 28: 2/2, shortest 1/4, resolved (right)
+truth: n1=1/2 n2=1/2
+  vision -> dialogue: observation {"symbols": 2, "beam_groups": 0, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["note@2", "note@2"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "n2"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "n2"], "requested_properties": ["dots.count", "flags.count", "head.fill", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 0, "confidence": 0.975, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}, "flags.count": {"value": 0, "confidence": 0.849, "evidence": {"region": [10.0, 80.0, 70.0, 160.0]}}, "head.fill": {"value": "hollow", "confidence": 0.987, "evidence": {"region": [10.0, 80
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["note@2", "note@2"]]}
+  dialogue -> pitch: resolve {"notes": 2, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 29: 3/4, shortest 1/8, contradiction
+truth: n1=3/16 n2=3/16 n3=1/12 n4=1/12 n5=1/12 n6=1/8
+  vision -> dialogue: observation {"symbols": 6, "beam_groups": 3, "tuplets": 1}
+  search -> dialogue: interpretations {"round": 1, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 1, "suspects": [["n6", "dots.count"], ["n5", "dots.count"], ["n3", "dots.count"], ["n4", "dots.count"]]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n6", "n5", "n3"], "requested_properties": ["dots.count"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n6", "properties": {"dots.count": {"value": 0, "confidence": 0.994, "evidence": {"region": [145.0, 40.0, 205.0, 120.0]}}}}, {"symbol_id": "n5", "properties": {"dots.count": {"value": 0, "confidence": 0.848, "evidence": {"region": [123.0, 35.0, 183.0, 115.0]}}}}, {"symbol_id": "n3", "properties": {"dots.cou
+  search -> dialogue: interpretations {"round": 2, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 2, "suspects": [["n4", "dots.count"]]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n4"], "requested_properties": ["dots.count"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n4", "properties": {"dots.count": {"value": 0, "confidence": 0.972, "evidence": {"region": [101.0, 35.0, 161.0, 115.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 3, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 3, "suspects": [["n5", "dots.count"], ["n4", "dots.count"], ["n3", "dots.count"], ["n6", "dots.count"]]}
+  dialogue -> vision: relook {"round": 3, "request": {"request_id": "q3", "measure_id": "m1", "target_symbol_ids": ["n5", "n4", "n3"], "requested_properties": ["dots.count"]}}
+  vision -> dialogue: relook_result {"round": 3, "response": {"request_id": "q3", "measure_id": "m1", "results": [{"symbol_id": "n5", "properties": {"dots.count": {"value": 0, "confidence": 0.956, "evidence": {"region": [123.0, 35.0, 183.0, 115.0]}}}}, {"symbol_id": "n4", "properties": {"dots.count": {"value": 0, "confidence": 0.93, "evidence": {"region": [101.0, 35.0, 161.0, 115.0]}}}}, {"symbol_id": "n3", "properties": {"dots.coun
+  search -> dialogue: interpretations {"round": 4, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 4, "suspects": [["n6", "dots.count"]]}
+  dialogue -> vision: relook {"round": 4, "request": {"request_id": "q4", "measure_id": "m1", "target_symbol_ids": ["n6"], "requested_properties": ["dots.count"]}}
+  vision -> dialogue: relook_result {"round": 4, "response": {"request_id": "q4", "measure_id": "m1", "results": [{"symbol_id": "n6", "properties": {"dots.count": {"value": 0, "confidence": 0.945, "evidence": {"region": [145.0, 40.0, 205.0, 120.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 5, "count": 0, "more": false, "sample": []}
+  dialogue -> vision: examine_region {"round": 5, "reason": "a symbol may be missing here", "request": {"request_id": "q5", "measure_id": "m1", "region": {"x0": 28.0, "x1": 74.5}}}
+  vision -> dialogue: region_result {"round": 5, "response": {"request_id": "q5", "measure_id": "m1", "new_symbols": [{"id": "n1", "type": "note", "staff_id": "st1", "measure_id": "m1", "voice_id": null, "bbox": [34.0, 105.0, 46.0, 115.0], "center": {"x": 40.0, "y": 110.0}, "head": {"fill": "filled", "confidence": 0.995}, "stem": {"state": "present", "confidence": 0.969, "direction": "down", "direction_confidence": 0.975}, "flags": 
+  search -> dialogue: interpretations {"round": 6, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 6, "suspects": [["n1", "dots.count"], ["n1", "flags.count"]]}
+  dialogue -> vision: relook {"round": 6, "request": {"request_id": "q6", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["dots.count", "flags.count"]}}
+  vision -> dialogue: relook_result {"round": 6, "response": {"request_id": "q6", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 1, "confidence": 0.981, "evidence": {"region": [10.0, 70.0, 70.0, 150.0]}}, "flags.count": {"value": 0, "confidence": 0.991, "evidence": {"region": [10.0, 70.0, 70.0, 150.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 7, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 7, "suspects": [["n1", "dots.count"], ["n1", "flags.count"]]}
+  dialogue -> vision: relook {"round": 7, "request": {"request_id": "q7", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["dots.count", "flags.count"]}}
+  vision -> dialogue: relook_result {"round": 7, "response": {"request_id": "q7", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 1, "confidence": 0.994, "evidence": {"region": [10.0, 70.0, 70.0, 150.0]}}, "flags.count": {"value": 0, "confidence": 0.921, "evidence": {"region": [10.0, 70.0, 70.0, 150.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 8, "count": 0, "more": false, "sample": []}
+  dialogue -> output: contradiction_report {"round": 8, "note": "no valid interpretation and nothing left to re-examine", "observations": [["n2", "dots.count", "unknown", 0.539, false]]}
+
+=== measure 31: 3/8, shortest 1/8, resolved (right)
+truth: n1=1/8 r2=1/8 n3=1/8
+  vision -> dialogue: observation {"symbols": 3, "beam_groups": 0, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["note@8", "rest@8", "note@8"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "r2", "n3"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "r2", "n3"], "requested_properties": ["flags.count", "head.fill", "rest.shape", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"flags.count": {"value": 1, "confidence": 0.985, "evidence": {"region": [10.0, 70.0, 70.0, 150.0]}}, "head.fill": {"value": "filled", "confidence": 0.992, "evidence": {"region": [10.0, 70.0, 70.0, 150.0]}}, "stem.state": {"value": "present", "confidence": 0.934, "evidence": {"region": [
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["note@8", "rest@8", "note@8"]]}
+  dialogue -> pitch: resolve {"notes": 2, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 34: 3/4, shortest 1/4, resolved (right)
+truth: n1=1/2 n2=1/4
+  vision -> dialogue: observation {"symbols": 2, "beam_groups": 0, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 0, "more": false, "sample": []}
+  dialogue -> dialogue: contradiction {"round": 1, "suspects": [["n2", "dots.count"]]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n2"], "requested_properties": ["dots.count"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n2", "properties": {"dots.count": {"value": 0, "confidence": 0.923, "evidence": {"region": [82.0, 85.0, 142.0, 165.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["note@2", "note@4"]]}
+  dialogue -> dialogue: verify {"round": 2, "symbols": ["n1", "n2"]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n1", "n2"], "requested_properties": ["flags.count", "head.fill", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"flags.count": {"value": 0, "confidence": 0.98, "evidence": {"region": [10.0, 85.0, 70.0, 165.0]}}, "head.fill": {"value": "hollow", "confidence": 0.997, "evidence": {"region": [10.0, 85.0, 70.0, 165.0]}}, "stem.state": {"value": "present", "confidence": 0.894, "evidence": {"region": [1
+  search -> dialogue: interpretations {"round": 3, "count": 1, "more": false, "sample": [["note@2", "note@4"]]}
+  dialogue -> pitch: resolve {"notes": 2, "accidentals": 2}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 37: 3/8, shortest 1/8, resolved (right)
+truth: n1=3/8
+  vision -> dialogue: observation {"symbols": 1, "beam_groups": 0, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["dotted_note@4"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"stem.state": {"value": "present", "confidence": 0.975, "evidence": {"region": [10.0, 75.0, 70.0, 155.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["dotted_note@4"]]}
+  dialogue -> pitch: resolve {"notes": 1, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 38: 2/4, shortest 1/16, resolved (right)
+truth: n1=1/16 r2=1/16 n3=1/16 r4=3/32 r5=1/16 r6=1/16 n7=3/32
+  vision -> dialogue: observation {"symbols": 7, "beam_groups": 0, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["note@16", "rest@16", "note@16", "dotted_rest@16", "rest@16", "rest@16", "dotted_note@16"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "n3", "r4", "n7"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "n3", "r4", "n7"], "requested_properties": ["dots.count", "flags.count", "head.fill", "rest.shape", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 0, "confidence": 0.969, "evidence": {"region": [10.0, 60.0, 70.0, 140.0]}}, "flags.count": {"value": 2, "confidence": 0.986, "evidence": {"region": [10.0, 60.0, 70.0, 140.0]}}, "head.fill": {"value": "filled", "confidence": 0.908, "evidence": {"region": [10.0, 60
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["note@16", "rest@16", "note@16", "dotted_rest@16", "rest@16", "rest@16", "dotted_note@16"]]}
+  dialogue -> pitch: resolve {"notes": 3, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 40: 2/2, shortest 1/8, resolved (right)
+truth: n1=3/16 n2=1/4 r3=1/12 n4=1/12 r5=1/12 n6=1/8 r7=3/16
+  vision -> dialogue: observation {"symbols": 7, "beam_groups": 0, "tuplets": 1}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["dotted_note@8", "note@4", "triplet@8#RNR", "note@8", "dotted_rest@8"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "n2", "r3", "n4", "r5", "n6", "r7"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "n2", "r3", "n4", "r5", "n6", "r7"], "requested_properties": ["dots.count", "flags.count", "head.fill", "rest.shape", "stem.state"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"dots.count": {"value": 1, "confidence": 0.949, "evidence": {"region": [10.0, 100.0, 70.0, 180.0]}}, "flags.count": {"value": 1, "confidence": 0.972, "evidence": {"region": [10.0, 100.0, 70.0, 180.0]}}, "head.fill": {"value": "filled", "confidence": 0.989, "evidence": {"region": [10.0, 
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["dotted_note@8", "note@4", "triplet@8#RNR", "note@8", "dotted_rest@8"]]}
+  dialogue -> pitch: resolve {"notes": 4, "accidentals": 1}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
+=== measure 42: 3/8, shortest 1/8, resolved (right)
+truth: n1=3/16 n2=3/16
+  vision -> dialogue: observation {"symbols": 2, "beam_groups": 1, "tuplets": 0}
+  search -> dialogue: interpretations {"round": 1, "count": 1, "more": false, "sample": [["dotted_note@8", "dotted_note@8"]]}
+  dialogue -> dialogue: verify {"round": 1, "symbols": ["n1", "n2"]}
+  dialogue -> vision: relook {"round": 1, "request": {"request_id": "q1", "measure_id": "m1", "target_symbol_ids": ["n1", "n2"], "requested_properties": ["beam_groups.beam_count", "dots.count", "head.fill"]}}
+  vision -> dialogue: relook_result {"round": 1, "response": {"request_id": "q1", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": "unknown", "confidence": 0.453, "evidence": {"region": [10.0, 90.0, 70.0, 170.0]}}, "dots.count": {"value": 1, "confidence": 0.972, "evidence": {"region": [10.0, 90.0, 70.0, 170.0]}}, "head.fill": {"value": "filled", "confidence": 0.997, "evidence": {
+  search -> dialogue: interpretations {"round": 2, "count": 1, "more": false, "sample": [["dotted_note@8", "dotted_note@8"]]}
+  dialogue -> dialogue: verify {"round": 2, "symbols": ["n1"]}
+  dialogue -> vision: relook {"round": 2, "request": {"request_id": "q2", "measure_id": "m1", "target_symbol_ids": ["n1"], "requested_properties": ["beam_groups.beam_count"]}}
+  vision -> dialogue: relook_result {"round": 2, "response": {"request_id": "q2", "measure_id": "m1", "results": [{"symbol_id": "n1", "properties": {"beam_groups.beam_count": {"value": 1, "confidence": 0.867, "evidence": {"region": [10.0, 90.0, 70.0, 170.0]}}}}]}}
+  search -> dialogue: interpretations {"round": 3, "count": 1, "more": false, "sample": [["dotted_note@8", "dotted_note@8"]]}
+  dialogue -> pitch: resolve {"notes": 2, "accidentals": 0}
+  pitch -> dialogue: pitches {"status": "resolved", "uncertain": []}
+
