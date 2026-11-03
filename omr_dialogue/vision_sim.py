@@ -178,8 +178,10 @@ class VisionSim:
         out = {"id": g["id"], "type": g["type"], "staff_id": "st1", "measure_id": self.g.mid, "voice_id": None,
                "bbox": self._box(g), "center": {"x": g["x"], "y": g["y"]}}
         if g["type"] == "rest":
-            out["rest"] = {"shape": self._prop(g, "rest.shape", factor)}
-            out["dots"] = {"count": self._prop(g, "dots.count", factor)}
+            sh = self._prop(g, "rest.shape", factor)
+            dt = self._prop(g, "dots.count", factor)
+            out["rest"] = {"shape": sh["value"], "confidence": sh["confidence"]}
+            out["dots"] = {"count": dt["value"], "confidence": dt["confidence"]}
             return out
         fill = self._prop(g, "head.fill", factor)
         stem = self._prop(g, "stem.state", factor)

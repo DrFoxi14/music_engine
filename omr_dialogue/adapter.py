@@ -32,8 +32,8 @@ class Symbol:
         self.raw = raw
         self.props = {}
         if self.type == "rest":
-            self.props["rest.shape"] = [raw["rest"]["shape"]["value"], raw["rest"]["shape"]["confidence"], False]
-            self.props["dots.count"] = [raw["dots"]["count"]["value"], raw["dots"]["count"]["confidence"], False]
+            self.props["rest.shape"] = [raw["rest"]["shape"], raw["rest"]["confidence"], False]
+            self.props["dots.count"] = [raw["dots"]["count"], raw["dots"]["confidence"], False]
         else:
             self.props["head.fill"] = [raw["head"]["fill"], raw["head"]["confidence"], False]
             self.props["stem.state"] = [raw["stem"]["state"], raw["stem"]["confidence"], False]

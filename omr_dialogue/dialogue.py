@@ -237,13 +237,24 @@ class Dialogue:
             if len(variants) == 1 and not more:
                 # before settling: decisive properties read without enough certainty are re-examined,
                 # and room in the spacing that no duration explains is searched for a missed symbol
-                unsure = {}
+                unsure, unconfirmed = {}, []
                 for sid, props in variants[0]["implied"].items():
                     s = next(x for x in symbols if x.id == sid)
-                    for p in props:
+                    for p, want in props.items():
                         v, c, ok = s.props[p]
-                        if not ok and c < VERIFY and asked[(sid, p)] < MAX_ASKS:
+                        if ok or c >= VERIFY:
+                            if v == want:
+                                continue
+                        if asked[(sid, p)] < MAX_ASKS:
                             unsure.setdefault(sid, []).append(p)
+                        elif not (A.certain(v, c, ok) and v == want):
+                            unconfirmed.append([sid, p, v, c])
+                if not unsure and unconfirmed:
+                    # musically valid is not visually certain: the reading this interpretation needs was
+                    # not confirmed by Vision, so the measure is not settled
+                    status = "unconfirmed"
+                    self.say("dialogue", "output", "unconfirmed", round=rnd, observations=unconfirmed[:12])
+                    break
                 if unsure:
                     targets = list(unsure)
                     props = sorted({p for ps in unsure.values() for p in ps})
