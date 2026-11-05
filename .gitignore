@@ -2,6 +2,9 @@
 /build/
 /ritmuri_engine
 /rhythm_search_engine
+/math_engine
+/search_engine
+/stem_first_engine
 /omr_constraint_solver
 /pitch_context_engine
 *.o

@@ -4,10 +4,26 @@ A C++17 toolkit for exact rhythmic pattern generation, enumeration, and filtered
 
 ## Components
 
+- `stem_first_engine.cpp` — STEM-first reading of stemmed notes (see [DrFoxi14/stem](https://github.com/DrFoxi14/stem)): free end from flag/beam, notehead at the opposite end, both ends tested for quarter notes, duration candidates from flag/beam count, head fill, dots and (nested) tuplets.
+- `omr_constraint_solver.cpp` — exact measure arithmetic over duration candidates.
+- `pitch_context_engine.cpp` — staff position, clef, key signature and accidentals to pitch.
+- `search_engine.cpp` + `rhythm_space.hpp` — the complete rhythmic space of a measure (nested tuplets, multiple dots, any ratio) with exact counting, indexing, sampling and template search; plus the legacy filtered SEARCH.
 - `math_engine.cpp` — compact dynamic-programming index for counting and retrieving rhythmic patterns by index, with separate note-only and at-least-one-rest categories.
-- `search_engine.cpp` — bounded, filter-driven search and lazy pattern generation.
-- `math_engine_client.py` — Python client for Math Engine's counting and indexed retrieval API.
-- `search_engine_client.py` — Python client for filtered search and generation.
+- `*_client.py` — Python clients for each engine; `stem_first_client.py` also has pipeline helpers.
+
+### OMR pipeline (no visual detection here)
+
+```
+Visual Engine (pixels) ──► stems, noteheads, flags, beams, dots, rests, tuplet brackets
+                              │
+                    stem_first_engine          free end / notehead end, stem direction,
+                              │                chords, duration candidates per event
+              ┌───────────────┴────────────────┐
+     omr_constraint_solver             pitch_context_engine
+     (which durations fill the bar)    (pitch from notehead position)
+              │
+     search_engine templates           (what could fill a gap the image missed)
+```
 
 The engines keep their working indexes and event tables in process memory. They do not materialize the full combinatorial pattern space or write a giant TXT file.
 
@@ -181,7 +197,114 @@ This is a bounded depth-first search, not a database containing every possible r
 - If both are false, the search completed and all matches for that query were examined.
 - Exact multiset queries such as `exact=note@2:1,note@4:2` are especially efficient because the engine only explores the specified event inventory.
 
-The search engine currently supports normal notes/rests, single-dotted notes/rests, and triplet groups. Double/triple dots, quintuplets, septuplets, ties, accents, and notation engraving are not implemented yet.
+The legacy `SEARCH`/`GENERATE` vocabulary is flat: notes/rests with at most one dot and tuplet groups whose slots are equal notes or rests. For nested tuplets, mixed values inside tuplets, multiple dots and exact counts use the complete rhythm space below.
+
+## Complete rhythm space (COUNT / GET / PAGE / SAMPLE / PARSE)
+
+`rhythm_space.hpp` defines every notated rhythm of one measure as a grammar:
+
+```
+measure := item+                      (fills the bar exactly)
+item    := note | rest | M | tuplet
+tuplet  := [a:n item+]                content of nominal length a*u sounds as n*u
+```
+
+A tuplet's content is any item sequence, so it can hold mixed values, rests, dots and further tuplets. Examples: `[3:2 n4 n8]`, `[5:4 n16 r16 n8.]` and `[7:4 n16 n16 [3:2 n16 n16 n16] n16 n16 n16]`, a triplet inside a septuplet. "Every possibility" is infinite without limits, so the options below bound the space; inside those limits nothing is missing.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `max_denominator` | startup value | shortest base value (power of two, up to 1024) |
+| `longest` | `2` | longest base value: `1` whole, `2` breve, `4` longa |
+| `max_dots` | `2` | dots per note/rest (0..4) |
+| `depth` | `2` | tuplet nesting depth (0 = no tuplets, up to 4) |
+| `max_actual`, `max_normal` | `12`, `16` | tuplet size limits |
+| `tuplet_normals` | `standard` | `standard`: a:largest power of two below a (3:2, 5:4, 7:4, 9:8 ...) and 2:3, 4:3, 4:6, 8:6 ...; `any`: every n from 1..max_normal |
+| `tuplet_ratios` | — | explicit list such as `3:2,5:6,7:4` (or `none`) |
+| `unit_dots` | `1` | tuplets may be counted in dotted units |
+| `min_tuplet_items` | `2` | `1` also allows a bracket over a single item |
+| `values`, `dots` | all | restrict note/rest values (`4,8,16,B`) and dot counts (`0,1`) |
+| `measure_rest` | `1` | include `M` (whole-bar rest) when the bar is not one whole note |
+| `template=` | — | must be last; consumes the rest of the line |
+
+Notation: `n4` quarter note, `r8.` dotted eighth rest, `n2..` double-dotted half, `nB` breve, `nL` longa, `M` full-measure rest, `[a:n ...]` tuplet (its unit is the content length divided by a, so it is not written).
+
+Commands (categories: `ALL`, `NOTES` = no rest anywhere, `RESTS` = at least one rest):
+
+```text
+COUNT  ALL                                    exact number of patterns (big integer)
+GET    RESTS 123456789123456789               decode one index directly
+PAGE   NOTES 0 100 depth=1 max_dots=1          a page of consecutive patterns
+SAMPLE ALL 10 seed=7                          uniformly random patterns
+COUNT  ALL template=n4 * [3:2 n8 n8 n8]        patterns starting with a quarter, ending with a triplet
+PAGE   ALL 0 50 template=n4. *=1/8 ? r4        known items, a 1/8 gap, exactly one unknown item, a rest
+PARSE  [7:4 n16 n16 [3:2 n16 n16 n16] n16 n16 n16] n4
+```
+
+Template tokens: a concrete item, `?` (exactly one item), `*` (any items, possibly none), `+` (one or more), `*=3/16` (any items lasting exactly 3/16). Wildcards range over the configured space; concrete items may be any valid notation.
+
+Each pattern lists its notation and every note/rest with notated value, exact sounding `duration`, `onset` and enclosing tuplet ratios.
+
+```python
+with SearchEngineClient("./search_engine", 4, 4, 256) as engine:
+    print(engine.count("ALL")["digits"])          # 513-digit count for 4/4 at 1/256
+    print(engine.get(10**200, "RESTS")["notation"])
+    print(engine.page(0, 20, "ALL", template="n4 * r8", depth=1)["patterns"])
+    print(engine.parse("[7:4 n16 n16 [3:2 n16 n16 n16] n16 n16 n16] n4")["events"])
+```
+
+How it works: inside a tuplet, the content is an ordinary sequence measured in notated (nominal) values; only sounding time is scaled by n/a. Counting is therefore a dynamic program per nesting level over nominal ticks, with exact big integers. Decoding an index walks the choices, using exact completion counts, without enumerating earlier patterns. A 4/4 bar at 1/256 with defaults is counted in about 0.05 s; decoding runs at roughly 1000 patterns per second.
+
+Correctness: `tests/rhythm_space_reference.py` is an independent brute-force enumerator of the same grammar. The tests compare the C++ results pattern by pattern (all three categories and template queries) on several small configurations.
+
+Not included: ties, grace notes, multiple voices in one sequence, beaming/spelling variants of the same rhythm, and irrational meters (denominators that are not powers of two).
+
+## STEM-first Engine
+
+`stem_first_engine.cpp` implements the logic of [DrFoxi14/stem](https://github.com/DrFoxi14/stem) on primitives supplied by the Visual Engine. It does not read pixels.
+
+For each stem with real endpoints A and B (no orientation assumed):
+
+| Evidence | Free end | Notehead searched at |
+|---|---|---|
+| flag at A / B | A / B | B / A |
+| beam connected at A / B | A / B | B / A |
+| neither (quarter-note branch) | undetermined | both ends tested; the end with a connected notehead is accepted |
+
+- Stem length is never a rule. Tolerances are multiples of the staff spacing, so short, long or tilted handwritten stems give the same reading.
+- The number of flags or stacked beams at the free end gives the subdivision (1 → 1/8, 2 → 1/16, ...). It never makes the end ambiguous.
+- Without flag or beam, the head fill separates half (hollow) from quarter (filled). An uncertain fill yields both candidates with the fill confidence.
+- Noteheads along the stem form one chord event, anchored at the notehead end. Dots to the right of a head extend the duration. Tuplet brackets (`3`, or explicit `5:6`) scale their members and multiply when nested.
+- Rests come from the dedicated rest recognizer and are only placed on the timeline. Stemless hollow heads are whole notes. A stemless filled head lists every filled-head reading and asks for a stem recheck.
+- Contradictions are reported, never guessed: flag or beam at both ends, noteheads at both ends, a stem without a notehead, a notehead at the free end, a notehead shared by several stems.
+
+Build:
+
+```bash
+clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic stem_first_engine.cpp -o stem_first_engine
+```
+
+Pipeline:
+
+```python
+from stem_first_client import StemFirstClient, read_measure, pitch_inputs
+from omr_constraint_client import OMRConstraintClient
+from pitch_context_client import PitchContextClient
+
+with StemFirstClient("./stem_first_engine") as stem, OMRConstraintClient("./omr_constraint_solver") as solver:
+    measure = read_measure(
+        stem, solver, meter="4/4", spacing=10,
+        stems=[{"id": "s1", "x1": 106, "y1": 120, "x2": 106, "y2": 85}],
+        noteheads=[{"id": "h1", "bbox": {"left": 94, "top": 115, "right": 106, "bottom": 125},
+                    "fill": "unknown", "fill_confidence": 1.0}],
+        rests=[{"id": "r1", "bbox": {"left": 140, "top": 100, "right": 150, "bottom": 125}, "value": 2, "dots": 1}],
+    )
+    print(measure["events"])      # duration resolved by the bar: the unknown head must be a quarter
+
+    notes, stems = pitch_inputs(measure["analysis"], noteheads=[...], stems=[...])
+    # PitchContextClient(...).resolve(..., notes=notes, stems=stems)
+```
+
+Input elements: `stem {id,x1,y1,x2,y2}`, `notehead {id,bbox,fill,fill_confidence}`, `flag {id,bbox,count}`, `beam {id,x1,y1,x2,y2,thickness}`, `dot {id,x,y,confidence}`, `rest {id,bbox,value,dots}` with `value` a power of two, `"B"` or `"measure"`, and `tuplet {id,number,normal,members}`. Each request is one voice of one measure.
 
 
 ## OMR Constraint Solver
