@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -274,6 +275,48 @@ class RhythmSearchEngineTests(unittest.TestCase):
         )
         self.assertEqual(len(result["patterns"]), 0)
         self.assertFalse(result["summary"]["truncated"])
+
+    def test_rests_category_keeps_all_note_tuplets(self) -> None:
+        # A bar needs one rest somewhere, not a rest inside every tuplet.
+        result = self.engine.search(
+            "RESTS",
+            exact={"rest@4": 1, "triplet@8": 1, "note@2": 1},
+            triplet_patterns=["NNN"],
+            limit=20,
+        )
+        self.assertEqual(len(result["patterns"]), 6)
+        for pattern in result["patterns"]:
+            self.assertEqual(pattern["summary"]["rest_slots"], 1)
+
+    def test_prefix_is_pruned_during_search(self) -> None:
+        result = self.engine.search("NOTES", prefix=["note@16", "note@16"], limit=3, max_nodes=2000)
+        self.assertEqual(len(result["patterns"]), 3)
+        self.assertFalse(result["summary"]["truncated"])
+        for pattern in result["patterns"]:
+            self.assertEqual([e["descriptor"] for e in pattern["events"][:2]], ["note@16", "note@16"])
+
+    def test_rests_count_matches_math_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            math_binary = Path(tmp) / "math_engine"
+            compiler = os.environ.get("CXX", "clang++")
+            if subprocess.run(["which", compiler], capture_output=True).returncode != 0:
+                compiler = "g++"
+            subprocess.run([compiler, "-std=c++17", "-O2", str(ROOT / "math_engine.cpp"),
+                            "-o", str(math_binary)], check=True)
+            for meter in ((2, 4), (3, 8)):
+                out = subprocess.run([str(math_binary), str(meter[0]), str(meter[1]), "8"],
+                                     input="COUNT RESTS\nCOUNT NOTES\nEXIT\n",
+                                     capture_output=True, text=True, check=True).stdout.splitlines()
+                expected = {json.loads(line)["category"]: int(json.loads(line)["count"]) for line in out[1:]}
+                with SearchEngineClient(self.executable, meter[0], meter[1], 8) as engine:
+                    for category in ("RESTS", "NOTES"):
+                        result = engine.search(
+                            category,
+                            kinds=["note", "dotted_note", "rest", "dotted_rest", "triplet", "measure_rest"],
+                            limit=1000, max_nodes=10_000_000,
+                        )
+                        self.assertFalse(result["summary"]["has_more"])
+                        self.assertEqual(result["summary"]["matches_seen"], expected[category], (meter, category))
 
     def test_legacy_triplet_descriptor_and_pattern_remain_compatible(self) -> None:
         result = self.engine.search(

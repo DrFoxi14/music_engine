@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "rhythm_space.hpp"
+
 /*
  * Music Engine — filtered search and pattern generation (C++17).
  *
@@ -460,8 +462,9 @@ private:
                     notes += isNote ? 1 : 0;
                 }
                 const int rests = actual - notes;
+                // RESTS patterns need at least one rest somewhere in the bar,
+                // not inside every tuplet: all-note tuplets stay available.
                 if (!includeRests && rests > 0) continue;
-                if (includeRests && rests == 0) continue;
                 if (!requestedMasks.empty() && !requestedMasks.count(maskText)) continue;
 
                 std::ostringstream label;
@@ -517,7 +520,6 @@ private:
                         notes += isNote ? 1 : 0;
                     }
                     const int rests = actual - notes;
-                    if (includeRests && rests == 0) continue;
                     std::ostringstream label;
                     const bool isTriplet = actual == 3 && normal == 2;
                     if (isTriplet) label << "triplet(";
@@ -745,6 +747,8 @@ private:
                 if (it == remainingExact_.end() || it->second <= 0) return false;
             }
             if (chosen_.empty() && !f_.first.empty() && event.key() != f_.first) return false;
+            // Prune by prefix while it is being built instead of only at leaves.
+            if (chosen_.size() < f_.prefix.size() && event.key() != f_.prefix[chosen_.size()]) return false;
             return true;
         }
 
@@ -895,6 +899,119 @@ void emitError(const std::string& message) {
     std::cout << "{\"type\":\"error\",\"message\":\"" << jsonEscape(message) << "\"}\n" << std::flush;
 }
 
+// ---------------------------------------------------------------------------
+// Complete rhythm space commands (see rhythm_space.hpp):
+//   COUNT  ALL|NOTES|RESTS [options] [template=...]
+//   GET    ALL|NOTES|RESTS <index> [options] [template=...]
+//   PAGE   ALL|NOTES|RESTS <start> <limit> [options] [template=...]
+//   SAMPLE ALL|NOTES|RESTS <n> [seed=N] [options] [template=...]
+//   PARSE  [options] <notation>
+// ---------------------------------------------------------------------------
+class SpaceCommands {
+public:
+    SpaceCommands(int numerator, int denominator, int maxDenominator)
+        : numerator_(numerator), denominator_(denominator), maxDenominator_(maxDenominator) {}
+
+    bool handles(const std::string& command) const {
+        return command == "COUNT" || command == "GET" || command == "PAGE" ||
+               command == "SAMPLE" || command == "PARSE";
+    }
+
+    void run(const std::string& command, std::istringstream& input) {
+        std::vector<std::string> args;
+        std::string token;
+        while (input >> token) args.push_back(token);
+
+        if (command == "PARSE") { parse(args); return; }
+        if (args.empty()) throw std::invalid_argument(command + " requires a category: ALL, NOTES or RESTS");
+        const rhythm_space::Category category = rhythm_space::parseCategory(args[0]);
+        size_t positional = command == "COUNT" ? 0 : (command == "PAGE" ? 2 : 1);
+        if (args.size() < 1 + positional) throw std::invalid_argument(command + " is missing arguments");
+        const std::vector<std::string> pos(args.begin() + 1, args.begin() + 1 + static_cast<long>(positional));
+        const std::vector<std::string> options(args.begin() + 1 + static_cast<long>(positional), args.end());
+
+        const rhythm_space::Request req =
+            rhythm_space::parseRequest(options, numerator_, denominator_, maxDenominator_);
+        auto space = cache_.get(req.config);
+        std::vector<rhythm_space::Token> tokens;
+        if (!req.templateText.empty())
+            tokens = rhythm_space::NotationParser(*space, req.templateText).parseTemplate();
+        const rhythm_space::Query query(space, tokens);
+        const rhythm_space::Count total = query.total();
+        const rhythm_space::BigUInt selected = rhythm_space::selectCount(total, category);
+
+        if (command == "COUNT") {
+            std::cout << "{\"type\":\"count\",\"category\":\"" << rhythm_space::categoryName(category)
+                      << "\",\"count\":\"" << selected.str() << "\",\"all\":\"" << total.all.str()
+                      << "\",\"notes_only\":\"" << total.quiet.str()
+                      << "\",\"with_rests\":\"" << (total.all - total.quiet).str()
+                      << "\",\"digits\":" << selected.str().size()
+                      << ",\"template\":\"" << jsonEscape(req.templateText)
+                      << "\",\"config\":" << rhythm_space::configJson(*space) << "}\n";
+        } else if (command == "GET") {
+            const rhythm_space::BigUInt index = rhythm_space::BigUInt::parse(pos[0]);
+            if (!(index < selected)) throw std::invalid_argument("index out of range; COUNT gives " + selected.str());
+            emitPattern(*space, query, category, index);
+        } else if (command == "PAGE") {
+            rhythm_space::BigUInt index = rhythm_space::BigUInt::parse(pos[0]);
+            const int limit = rhythm_space::parseInt(pos[1], "limit");
+            if (limit < 1 || limit > 1000) throw std::invalid_argument("PAGE limit must be 1..1000");
+            int returned = 0;
+            for (; returned < limit && index < selected; ++returned) {
+                emitPattern(*space, query, category, index);
+                index += rhythm_space::BigUInt(1);
+            }
+            std::cout << "{\"type\":\"page_end\",\"category\":\"" << rhythm_space::categoryName(category)
+                      << "\",\"returned\":" << returned << ",\"total\":\"" << selected.str()
+                      << "\",\"has_more\":" << (index < selected ? "true" : "false") << "}\n";
+        } else if (command == "SAMPLE") {
+            const int n = rhythm_space::parseInt(pos[0], "sample size");
+            if (n < 1 || n > 1000) throw std::invalid_argument("SAMPLE size must be 1..1000");
+            if (selected.isZero()) throw std::invalid_argument("no pattern matches; nothing to sample");
+            std::mt19937_64 rng(req.seed);
+            for (int i = 0; i < n; ++i)
+                emitPattern(*space, query, category, rhythm_space::BigUInt::randomBelow(selected, rng));
+            std::cout << "{\"type\":\"sample_end\",\"returned\":" << n << ",\"total\":\"" << selected.str() << "\"}\n";
+        }
+        std::cout << std::flush;
+    }
+
+private:
+    int numerator_;
+    int denominator_;
+    int maxDenominator_;
+    rhythm_space::SpaceCache cache_;
+
+    void emitPattern(const rhythm_space::Space& space, const rhythm_space::Query& query,
+                     rhythm_space::Category category, const rhythm_space::BigUInt& index) {
+        const auto nodes = query.decode(category, index);
+        const std::string head = std::string(",\"category\":\"") + rhythm_space::categoryName(category) +
+                                 "\",\"index\":\"" + index.str() + "\"";
+        std::cout << rhythm_space::patternJson(space, nodes, head) << '\n';
+    }
+
+    void parse(const std::vector<std::string>& args) {
+        std::vector<std::string> options;
+        std::string text;
+        for (const auto& a : args) {
+            if (text.empty() && a.find('=') != std::string::npos) options.push_back(a);
+            else text += (text.empty() ? "" : " ") + a;
+        }
+        rhythm_space::Request req = rhythm_space::parseRequest(options, numerator_, denominator_, maxDenominator_);
+        // PARSE validates notation on the finest grid unless told otherwise.
+        if (!req.raw.count("max_dots")) req.config.maxDots = 4;
+        if (!req.raw.count("max_denominator")) req.config.maxDenominator = 1024;
+        req.config.depth = 0; // PARSE only needs the grid, not the counting tables
+        auto space = cache_.get(req.config);
+        const auto nodes = rhythm_space::NotationParser(*space, text).parseSequence();
+        uint64_t nominal = 0;
+        for (const auto& node : nodes) nominal += node.span;
+        const std::string head = std::string(",\"source\":\"parse\",\"fills_measure\":") +
+                                 (nominal == space->measureTicks() ? "true" : "false");
+        std::cout << rhythm_space::patternJson(*space, nodes, head) << '\n' << std::flush;
+    }
+};
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -910,6 +1027,7 @@ int main(int argc, char** argv) {
         }
 
         SearchEngine engine(numerator, denominator, maxDenominator);
+        SpaceCommands space(numerator, denominator, maxDenominator);
         std::cout << engine.readyJson() << '\n' << std::flush;
         std::string line;
         while (std::getline(std::cin, line)) {
@@ -926,6 +1044,14 @@ int main(int argc, char** argv) {
                           << "\"min_rest_slots\",\"max_rest_slots\",\"min_note_slots\",\"max_note_slots\","
                           << "\"min_event_ticks\",\"max_event_ticks\",\"durations\",\"triplet_patterns\",\"tuplet_patterns\",\"tuplet_ratios\",\"kinds\",\"denominators\",\"subdivisions\",\"exact\","
                           << "\"first\",\"last\",\"prefix\",\"suffix\",\"contains\"]}\n" << std::flush;
+                continue;
+            }
+            if (space.handles(command)) {
+                try {
+                    space.run(command, input);
+                } catch (const std::exception& error) {
+                    emitError(error.what());
+                }
                 continue;
             }
             if (command != "SEARCH" && command != "GENERATE") {
