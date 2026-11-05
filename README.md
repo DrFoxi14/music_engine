@@ -123,11 +123,11 @@ An event descriptor is usually `kind@denominator`:
 - `tuplet@8:9:8` — nine eighth-note slots in the time normally occupied by eight eighth notes.
 - `measure_rest@0` — full-measure rest, used when the bar length is not one whole note.
 
-The engine pre-generates these common actual:normal ratios: `3:2`, `4:3`, `5:4`, `6:4`, `7:4`, and `9:8`. Other ratios with `3 <= actual <= 12` and `1 <= normal <= 16` are generated on demand when supplied through `tuplet_ratios` or `tuplet_patterns`, including ratios such as `11:8`. The old `triplet@denominator` and `triplet_patterns` interface remains supported. Generic tuplet descriptors include the ratio so different group sizes never collide in exact filters or ordered sequence matching.
+The engine pre-generates these common actual:normal ratios: `3:2`, `4:3`, `5:4`, `6:4`, `7:4`, and `9:8`. Other ratios with `3 <= actual <= 12` and `1 <= normal <= 16` are generated on demand when supplied through `tuplet_ratios`, `tuplet_patterns`, or a tuplet descriptor in `exact`, `first`, `last`, `prefix`, `suffix`, or `contains`, including ratios such as `11:8`. Only `tuplet_ratios` and `tuplet_patterns` restrict results: a ratio named in a descriptor is generated but never widens an explicit `tuplet_ratios` list or excludes other tuplet ratios. The old `triplet@denominator` and `triplet_patterns` interface remains supported. Generic tuplet descriptors include the ratio so different group sizes never collide in exact filters or ordered sequence matching.
 
 For generic tuplets, the JSON result exposes the ratio, every note/rest slot, and each slot's exact duration. For example, `5:4:NNRNN` means note–note–rest–note–note in a five-slot group. The `durations` filter applies to the entire tuplet group; slot duration is returned separately.
 
-The timing grid uses integer ticks scaled to represent the supported tuplet denominators exactly (actual counts up to nine), so no floating-point rounding is used for bar filling.
+The timing grid uses integer ticks (`27720 = lcm(1..12)` ticks per whole note, times the maximum note denominator) to represent the supported tuplet denominators exactly (actual counts up to twelve), so no floating-point rounding is used for bar filling.
 
 ### Example: one half note and two quarter notes in 4/4
 
@@ -221,16 +221,20 @@ with OMRConstraintClient("./omr_constraint_solver") as solver:
 
 The example resolves the last note to a quarter note because the other candidates do not fill the 4/4 measure. Candidate confidence only ranks valid solutions; it never overrides the exact duration constraint.
 
+The solver uses an exact dynamic program over (event index, elapsed ticks) instead of enumerating candidate combinations. Its cost grows with the number of distinct onset positions, so dense measures with many ambiguous events (for example 24 events with three candidates each) are counted and resolved exactly. `valid_assignments` is the exact number of valid readings (`valid_assignments_is_lower_bound` is true only if the count exceeds 64-bit range), every candidate is classified as supported or eliminated, and `solutions` holds the `limit` best readings by visual log-score. `max_nodes` bounds the number of DP states; exceeding it yields `incomplete`.
+
+Durations are exact fractions on the same grid as Search Engine: power-of-two note values up to the maximum note denominator, their dotted values, and tuplet slots with up to 12 notes. For example, a sixteenth-note quintuplet slot is `1/20`, a septuplet slot `1/28`. A duration such as `1/13` is rejected.
+
 Statuses:
 
 - `resolved_unique` — exactly one valid assignment was found and the search completed.
 - `ambiguous` — multiple valid assignments remain.
 - `inconsistent` — no assignment satisfies the supplied candidates and measure.
-- `incomplete` — the node budget was reached; uniqueness cannot be claimed.
+- `incomplete` — the DP state budget (`max_nodes`) was reached; uniqueness cannot be claimed.
 
 The solver returns exact onset positions, candidate support/elimination per event, and suggested visual checks. The Python client attaches caller-provided bounding boxes to those guidance records.
 
-**Scope limitation:** version 1 handles one ordered monophonic voice/part in one measure. It must be called separately for each voice. Polyphonic SATB alignment, pickup measures, ties across barlines, tuplets beyond supplied effective durations, and cross-measure constraints require later extensions. Musical validity is not proof that the visual candidate list is correct: if the Visual Engine omitted the true candidate, the solver can report `inconsistent`, but cannot reconstruct missing pixel evidence.
+**Scope limitation:** version 1 handles one ordered monophonic voice/part in one measure. It must be called separately for each voice. Polyphonic SATB alignment, pickup measures, ties across barlines, tuplet grouping beyond supplied effective slot durations, and cross-measure constraints require later extensions. Musical validity is not proof that the visual candidate list is correct: if the Visual Engine omitted the true candidate, the solver can report `inconsistent`, but cannot reconstruct missing pixel evidence.
 
 
 ## Pitch Context Engine (Y-axis / pitch reasoning)
@@ -323,7 +327,7 @@ with PitchContextClient("./pitch_context_engine") as engine:
 
 ### Accidental-to-note assignment
 
-Accidental association uses page geometry, not harmony as a hard rule. Candidate noteheads must be to the right of the accidental glyph and within a staff-spacing-based vertical/horizontal window. Candidates are ranked by vertical anchor distance, with horizontal distance as a weaker tie-breaker. If the Visual Engine can estimate the symbol's musical anchor independently of its bounding-box center (for example, the bulb/center topology of a flat or the center of a natural), pass it as `anchor_y`.
+Accidental association uses page geometry, not harmony as a hard rule. Candidate noteheads must be to the right of the accidental glyph and within a staff-spacing-based vertical/horizontal window. An accidental cannot skip over a notehead column: only the first notehead column to its right is considered, plus noteheads sharing that column's `chord_id` or `stem_id` (chord noteheads displaced around a shared stem). A repeated note just after an altered note is therefore never a competing candidate. Candidates are ranked by vertical anchor distance, with horizontal distance as a weaker tie-breaker. If the Visual Engine can estimate the symbol's musical anchor independently of its bounding-box center (for example, the bulb/center topology of a flat or the center of a natural), pass it as `anchor_y`.
 
 - A clear geometric winner is assigned.
 - If two noteheads have similar geometric scores (for example, the accidental glyph overlaps two staff positions), the result is `ambiguous`; both candidate noteheads are returned for visual reinspection.
@@ -331,6 +335,8 @@ Accidental association uses page geometry, not harmony as a hard rule. Candidate
 - The engine never assigns an accidental merely because doing so would make a chord more consonant.
 
 A new `resolve()` request represents a new measure and starts with an empty local accidental register. Within a measure, a uniquely assigned accidental affects subsequent occurrences of the same letter and octave. Key-signature defaults apply when no local accidental is active.
+
+If an accidental is `ambiguous`, every candidate letter/octave becomes uncertain for the rest of the measure: later notes of that pitch report `pitch_certain=false`, `alteration_source="ambiguous_accidental_memory"`, and include the ambiguous glyph's alteration in `effective_alteration_options`. A later uniquely assigned accidental on the same letter/octave clears that uncertainty.
 
 ### Cross-barline ties
 

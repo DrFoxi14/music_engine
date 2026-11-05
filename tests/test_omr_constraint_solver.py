@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 import tempfile
 import unittest
@@ -118,6 +119,94 @@ class OMRConstraintSolverTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "resolved_unique")
         self.assertEqual(result["solutions"][0]["events"][1]["onset_whole"], "1/2")
+
+    def test_quintuplet_slot_durations_are_representable(self) -> None:
+        # Quarter + five sixteenth-note quintuplet slots (1/20 each) in 2/4.
+        events = [{"id": "q", "candidates": [{"duration": "1/4"}]}]
+        events += [
+            {"id": f"t{i}", "candidates": [{"duration": "1/20"}, {"duration": "1/16"}]}
+            for i in range(5)
+        ]
+        result = self.solver.resolve("2/4", events)
+        self.assertEqual(result["status"], "resolved_unique")
+        onsets = [e["onset_whole"] for e in result["solutions"][0]["events"]]
+        self.assertEqual(onsets, ["0/1", "1/4", "3/10", "7/20", "2/5", "9/20"])
+        for support in result["event_support"][1:]:
+            self.assertEqual(support["eliminated_candidates"], ["1/16"])
+
+    def test_septuplet_and_eleven_tuplet_slots_are_representable(self) -> None:
+        events = [{"id": f"s{i}", "candidates": [{"duration": "1/28"}]} for i in range(7)]
+        events += [{"id": f"e{i}", "candidates": [{"duration": "1/44"}]} for i in range(11)]
+        events.append({"id": "h", "candidates": [{"duration": "1/2"}]})
+        result = self.solver.resolve("4/4", events)
+        self.assertEqual(result["status"], "resolved_unique")
+
+    def test_unrepresentable_duration_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            self.solver.resolve("4/4", [{"id": "a", "candidates": [{"duration": "1/13"}]}])
+
+    def test_dense_ambiguous_measure_is_solved_exactly_within_default_budget(self) -> None:
+        # 3^24 raw combinations; enumeration used to exhaust the node budget.
+        events = [
+            {"id": f"e{i}", "candidates": [
+                {"duration": "1/16", "confidence": 0.6},
+                {"duration": "1/32", "confidence": 0.4},
+                {"duration": "1/8", "confidence": 0.3},
+            ]}
+            for i in range(24)
+        ]
+        result = self.solver.resolve("4/4", events)
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertFalse(result["truncated"])
+        self.assertEqual(result["valid_assignments"], 1606803)
+        self.assertFalse(result["valid_assignments_is_lower_bound"])
+        for support in result["event_support"]:
+            self.assertTrue(support["support_is_complete"])
+            self.assertEqual(support["unverified_candidates"], [])
+            self.assertEqual(sorted(support["supported_candidates"]), ["1/16", "1/32", "1/8"])
+        scores = [s["log_visual_score"] for s in result["solutions"]]
+        self.assertEqual(len(scores), 20)
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_dense_measure_elimination_is_exact(self) -> None:
+        # Sixteen events in 4/4 can only be sixteenth notes.
+        events = [
+            {"id": f"e{i}", "candidates": [{"duration": "1/8"}, {"duration": "1/16"}]}
+            for i in range(16)
+        ]
+        result = self.solver.resolve("4/4", events)
+        self.assertEqual(result["status"], "resolved_unique")
+        for support in result["event_support"]:
+            self.assertEqual(support["eliminated_candidates"], ["1/8"])
+
+    def test_solutions_are_the_best_scoring_assignments(self) -> None:
+        import itertools
+        from fractions import Fraction
+
+        options = [
+            [("1/4", 0.9), ("1/2", 0.3), ("1/8", 0.5)],
+            [("1/4", 0.6), ("1/8", 0.8)],
+            [("1/2", 0.7), ("1/4", 0.4), ("3/8", 0.2)],
+            [("1/8", 0.9), ("1/4", 0.5)],
+            [("1/4", 0.4), ("1/8", 0.6), ("1/2", 0.1)],
+        ]
+        events = [
+            {"id": f"e{i}", "candidates": [{"duration": d, "confidence": c} for d, c in opts]}
+            for i, opts in enumerate(options)
+        ]
+        valid = []
+        for combo in itertools.product(*options):
+            if sum(Fraction(d) for d, _ in combo) == 1:
+                score = sum(math.log(c) for _, c in combo)
+                valid.append(round(score, 4))
+        valid.sort(reverse=True)
+
+        result = self.solver.resolve("4/4", events, limit=4)
+        self.assertEqual(result["valid_assignments"], len(valid))
+        self.assertEqual([round(s["log_visual_score"], 4) for s in result["solutions"]], valid[:4])
+        for solution in result["solutions"]:
+            total = sum(Fraction(e["duration_whole"]) for e in solution["events"])
+            self.assertEqual(total, 1)
 
 
 if __name__ == "__main__":

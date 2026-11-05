@@ -476,6 +476,29 @@ Association associateAccidental(size_t accidentalIndex, const StaffConfig& cfg,
         return result;
     }
 
+    // An accidental cannot skip over a notehead column: it belongs to the
+    // first notehead column to its right. Later noteheads at the same staff
+    // position (repeated notes) are shadowed and are not candidates. Members
+    // of the nearest note's chord (same chord_id or stem_id) stay candidates,
+    // because chord noteheads may be displaced around a shared stem.
+    auto gapOf = [&](const NoteInput& note) {
+        return (note.box.valid ? note.box.left : note.x) - accidental.box.right;
+    };
+    size_t nearest = result.candidates.front().noteIndex;
+    for (const auto& candidate : result.candidates) {
+        if (gapOf(notes[candidate.noteIndex]) < gapOf(notes[nearest])) nearest = candidate.noteIndex;
+    }
+    const NoteInput& nearestNote = notes[nearest];
+    const double columnLimit = nearestNote.x + 0.30 * cfg.spacing;
+    result.candidates.erase(std::remove_if(result.candidates.begin(), result.candidates.end(),
+        [&](const AssociationCandidate& candidate) {
+            const NoteInput& note = notes[candidate.noteIndex];
+            if (note.x <= columnLimit) return false;
+            if (!note.chordId.empty() && note.chordId == nearestNote.chordId) return false;
+            if (!note.stemId.empty() && note.stemId == nearestNote.stemId) return false;
+            return true;
+        }), result.candidates.end());
+
     const double best = result.candidates.front().cost;
     const double second = result.candidates.size() > 1
         ? result.candidates[1].cost : std::numeric_limits<double>::infinity();
@@ -647,6 +670,12 @@ public:
         // Accidental state is measure-local. Tie carries are separate and
         // persist across consecutive RESOLVE requests for the same staff/voice.
         std::map<std::string, int> localAccidentalRegister;
+        // Pitch keys whose measure-local state became uncertain because an
+        // ambiguous accidental may apply to them. Values are the alterations
+        // the ambiguous glyph(s) could have introduced. A later unique
+        // accidental on the same letter/octave clears the uncertainty.
+        std::map<std::string, std::set<int>> uncertainRegister;
+        std::vector<std::set<int>> alterationOptions(notes.size());
         std::vector<int> resolvedAlteration(notes.size(), 0);
         std::vector<bool> alterationCertain(notes.size(), true);
         std::vector<std::string> alterationSource(notes.size(), "key_signature");
@@ -753,6 +782,7 @@ public:
                 }
                 const size_t ai = found->second.front();
                 localAccidentalRegister[key] = accidentalValue(accidentals[ai].kind);
+                uncertainRegister.erase(key);
                 alterationSource[noteIndex] = "local_accidental";
             }
 
@@ -775,12 +805,27 @@ public:
                     alterationSource[noteIndex] = "tie_carry";
                 }
                 resolvedAlteration[noteIndex] = alteration;
+                alterationOptions[noteIndex].insert(alteration);
                 if (local != localAccidentalRegister.end() &&
                     alterationSource[noteIndex] == "key_signature") {
                     alterationSource[noteIndex] = "measure_local_memory";
                 }
 
+                // An earlier ambiguous accidental may have changed this
+                // letter/octave for the rest of the measure.
+                auto uncertain = uncertainRegister.find(keyName);
+                if (uncertain != uncertainRegister.end() &&
+                    alterationSource[noteIndex] != "tie_carry" &&
+                    alterationSource[noteIndex] != "local_accidental" &&
+                    alterationSource[noteIndex] != "conflicting_accidentals") {
+                    alterationCertain[noteIndex] = false;
+                    alterationSource[noteIndex] = "ambiguous_accidental_memory";
+                    alterationOptions[noteIndex].insert(uncertain->second.begin(), uncertain->second.end());
+                }
+
                 if (!ambiguousAccidentals[noteIndex].empty()) {
+                    for (size_t accidentalIndex : ambiguousAccidentals[noteIndex])
+                        alterationOptions[noteIndex].insert(accidentalValue(accidentals[accidentalIndex].kind));
                     alterationCertain[noteIndex] = false;
                     if (tieResults[noteIndex].status == "continued" ||
                         tieResults[noteIndex].status == "continued_with_cautionary_accidental") {
@@ -805,6 +850,17 @@ public:
                     if (alterationSource[noteIndex] == "key_signature")
                         alterationSource[noteIndex] = "staff_position_unquantized";
                 }
+            }
+
+            // From the next onset onward, every candidate pitch of an
+            // ambiguous accidental has uncertain measure-local state.
+            for (size_t p = cursor; p < end; ++p) {
+                const size_t noteIndex = noteOrder[p];
+                auto amb = ambiguousAccidentals.find(noteIndex);
+                if (amb == ambiguousAccidentals.end() || amb->second.empty()) continue;
+                const std::string keyName = pitchKey(positions[noteIndex].letter, positions[noteIndex].octave);
+                for (size_t accidentalIndex : amb->second)
+                    uncertainRegister[keyName].insert(accidentalValue(accidentals[accidentalIndex].kind));
             }
             cursor = end;
         }
@@ -880,7 +936,7 @@ public:
                  stemChecks, missingStemNotes, multipleStemChords,
                  tieResults, tieEvents,
                  resolvedAlteration, alterationCertain, alterationSource,
-                 attachedAccidentals, ambiguousAccidentals, reviewRequired);
+                 attachedAccidentals, ambiguousAccidentals, alterationOptions, reviewRequired);
     }
 
 private:
@@ -902,6 +958,7 @@ private:
                   const std::vector<std::string>& alterationSource,
                   const std::unordered_map<size_t, std::vector<size_t>>& attached,
                   const std::unordered_map<size_t, std::vector<size_t>>& ambiguous,
+                  const std::vector<std::set<int>>& alterationOptionsByNote,
                   bool reviewRequired) const {
         (void)key;
         struct ChordFlag {
@@ -971,11 +1028,8 @@ private:
                 }
             }
             out << "],\"effective_alteration_options\":[";
-            std::set<int> alterationOptions{alterations[i]};
-            if (amb != ambiguous.end()) {
-                for (size_t accidentalIndex : amb->second)
-                    alterationOptions.insert(accidentalValue(accidentals[accidentalIndex].kind));
-            }
+            std::set<int> alterationOptions = alterationOptionsByNote[i];
+            alterationOptions.insert(alterations[i]);
             size_t optionIndex = 0;
             for (int option : alterationOptions) {
                 if (optionIndex++) out << ',';

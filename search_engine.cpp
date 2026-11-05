@@ -143,7 +143,7 @@ std::string descriptor(const std::string& raw) {
         if (den == 0 || den > 256 || !isPowerOfTwo(static_cast<int>(den)))
             throw std::invalid_argument("tuplet denominator must be a power of two <= 256");
         if (actual < 3 || actual > 12 || normal < 1 || normal > 16)
-            throw std::invalid_argument("tuplet counts must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
+            throw std::invalid_argument("tuplet counts must satisfy 3 <= actual <= 12 and 1 <= normal <= 16");
         if (actual == 3 && normal == 2)
             return "triplet@" + std::to_string(den); // Generic 3:2 spelling aliases to legacy triplet.
         return "tuplet@" + std::to_string(den) + ":" + std::to_string(actual) + ":" + std::to_string(normal);
@@ -182,7 +182,8 @@ struct Filter {
     std::set<std::string> durations;
     std::set<std::string> tripletPatterns;
     std::set<std::string> tupletPatterns;
-    std::set<std::string> tupletRatios;
+    std::set<std::string> tupletRatios;   // Explicit caller restriction (tuplet_ratios / tuplet_patterns).
+    std::set<std::string> generateRatios; // Ratios to generate on demand; never restricts results.
     std::set<std::string> kinds;
     std::set<int> denominators;
     std::map<std::string, int> exact;
@@ -306,8 +307,9 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
             const uint64_t actual = parseU64(parts[0], "tuplet actual count");
             const uint64_t normal = parseU64(parts[1], "tuplet normal count");
             if (actual < 3 || actual > 12 || normal < 1 || normal > 16)
-                throw std::invalid_argument("tuplet ratio must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
+                throw std::invalid_argument("tuplet ratio must satisfy 3 <= actual <= 12 and 1 <= normal <= 16");
             f.tupletRatios.insert(std::to_string(actual) + ":" + std::to_string(normal));
+            f.generateRatios.insert(std::to_string(actual) + ":" + std::to_string(normal));
         }
     }
     if (auto it = args.find("tuplet_patterns"); it != args.end()) {
@@ -322,6 +324,7 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
                 throw std::invalid_argument("tuplet pattern ratio out of range");
             const std::string ratio = std::to_string(actual) + ":" + std::to_string(normal);
             f.tupletRatios.insert(ratio);
+            f.generateRatios.insert(ratio);
             f.tupletPatterns.insert(ratio + ":" + parts[2]);
         }
     }
@@ -344,12 +347,14 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
         if (!supported.count(pair.first)) throw std::invalid_argument("unknown filter: " + pair.first);
 
     // Sequence and exact descriptors can request uncommon ratios too; infer
-    // their ratios so SearchEngine generates the necessary candidates.
+    // their ratios so SearchEngine generates the necessary candidates. These
+    // inferred ratios only drive generation: they must never widen an explicit
+    // tuplet_ratios restriction, nor restrict other tuplets when none was given.
     auto registerDescriptorRatio = [&](const std::string& value) {
         if (value.rfind("tuplet@", 0) != 0) return;
         const auto fields = split(value.substr(value.find('@') + 1), ':');
         if (fields.size() == 3)
-            f.tupletRatios.insert(fields[1] + ":" + fields[2]);
+            f.generateRatios.insert(fields[1] + ":" + fields[2]);
     };
     for (const auto& item : f.exact) registerDescriptorRatio(item.first);
     registerDescriptorRatio(f.first);
@@ -407,7 +412,7 @@ public:
                                         std::to_string(event.normalCount));
             }
         }
-        for (const auto& ratio : filter.tupletRatios) {
+        for (const auto& ratio : filter.generateRatios) {
             if (availableRatios.count(ratio)) continue;
             const auto parts = split(ratio, ':');
             const int actual = static_cast<int>(parseU64(parts.at(0), "tuplet actual count"));

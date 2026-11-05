@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <unordered_map>
 #include <numeric>
 #include <set>
 #include <sstream>
@@ -111,10 +112,6 @@ struct InputEvent {
     std::vector<Candidate> candidates;
 };
 
-struct Chosen {
-    size_t candidateIndex = 0;
-};
-
 struct Solution {
     std::vector<size_t> choices;
     double logScore = 0.0;
@@ -152,7 +149,7 @@ InputEvent parseEvent(const std::string& token, uint64_t ticksPerWhole) {
             colon == std::string::npos ? 1.0 : parseConfidence(rawCandidate.substr(colon + 1));
 
         if (ticksPerWhole % duration.d != 0)
-            throw std::invalid_argument("duration denominator is not representable at selected resolution: " + duration.str());
+            throw std::invalid_argument("duration is not representable at selected resolution (power-of-two note values up to max denominator, tuplet slots with up to 12 notes): " + duration.str());
 
         if (duration.n > UINT64_MAX / (ticksPerWhole / duration.d))
             throw std::invalid_argument("duration is too large");
@@ -194,13 +191,30 @@ std::vector<std::string> suggestedChecks(const std::vector<Rational>& durations)
     return checks;
 }
 
+// Ticks per whole note: lcm(1..12) * max_note_denominator. This is the same
+// exact grid as Search Engine, so tuplet slot durations with actual counts up
+// to 12 (e.g. 1/20 for a sixteenth-note quintuplet slot) are representable.
+constexpr uint64_t kTupletGridFactor = 27720;
+
+uint64_t ticksPerWholeFor(int maxDenominator) {
+    return kTupletGridFactor * static_cast<uint64_t>(maxDenominator);
+}
+
+uint64_t saturatingAdd(uint64_t a, uint64_t b, bool& saturated) {
+    if (a > UINT64_MAX - b) {
+        saturated = true;
+        return UINT64_MAX;
+    }
+    return a + b;
+}
+
 class Solver {
 public:
     Solver(int numerator, int denominator, int maxDenominator,
            SearchConfig config, std::vector<InputEvent> events)
         : numerator_(numerator), denominator_(denominator),
           maxDenominator_(maxDenominator), config_(config), events_(std::move(events)),
-          ticksPerWhole_(static_cast<uint64_t>(6) * maxDenominator_) {
+          ticksPerWhole_(ticksPerWholeFor(maxDenominator_)) {
         if (numerator_ <= 0 || numerator_ > 10000) throw std::invalid_argument("meter numerator must be 1..10000");
         if (!isPowerOfTwo(static_cast<uint64_t>(denominator_)) ||
             static_cast<uint64_t>(denominator_) > static_cast<uint64_t>(maxDenominator_))
@@ -215,7 +229,6 @@ public:
         if (scaled % static_cast<uint64_t>(denominator_) != 0)
             throw std::invalid_argument("meter cannot be represented at this resolution");
         targetTicks_ = scaled / static_cast<uint64_t>(denominator_);
-        if (targetTicks_ > 2000000) throw std::invalid_argument("measure exceeds solver grid limit");
 
         for (const auto& event : events_) {
             if (!ids_.insert(event.id).second) throw std::invalid_argument("duplicate event id: " + event.id);
@@ -225,6 +238,7 @@ public:
             }
         }
 
+        // Bounded by 2048 events * 16 measures each, well inside uint64.
         suffixMin_.assign(events_.size() + 1, 0);
         suffixMax_.assign(events_.size() + 1, 0);
         for (size_t i = events_.size(); i-- > 0;) {
@@ -238,27 +252,14 @@ public:
             suffixMax_[i] = suffixMax_[i + 1] + maximum;
         }
 
-        choices_.resize(events_.size());
         support_.resize(events_.size());
         for (size_t i = 0; i < events_.size(); ++i) {
             support_[i].assign(events_[i].candidates.size(), false);
         }
     }
 
-    std::string readyJson() const {
-        std::ostringstream out;
-        out << "{\"type\":\"ready\",\"engine\":\"omr_constraint_solver\",\"meter\":\""
-            << numerator_ << '/' << denominator_ << "\",\"max_note_denominator\":"
-            << maxDenominator_ << ",\"ticks_per_whole\":" << ticksPerWhole_
-            << ",\"protocol\":\"RESOLVE meter_num meter_den max_denominator options...\"}";
-        return out.str();
-    }
-
     std::string solve() {
-        dfs(0, 0, 0.0);
-
-        std::stable_sort(solutions_.begin(), solutions_.end(),
-            [](const Solution& a, const Solution& b) { return a.logScore > b.logScore; });
+        runDynamicProgram();
 
         std::ostringstream out;
         const char* status = truncated_ ? "incomplete" :
@@ -269,6 +270,7 @@ public:
             << "\",\"measure_duration_whole\":\"" << Rational(numerator_, denominator_).str()
             << "\",\"nodes_visited\":" << nodesVisited_
             << ",\"valid_assignments\":" << validCount_
+            << ",\"valid_assignments_is_lower_bound\":" << (countSaturated_ ? "true" : "false")
             << ",\"truncated\":" << (truncated_ ? "true" : "false")
             << ",\"solutions\":[";
         for (size_t s = 0; s < solutions_.size(); ++s) {
@@ -284,15 +286,15 @@ public:
                 out << '"' << events_[i].candidates[c].duration.str() << '"';
             }
             out << "],\"supported_candidates\":[";
-            std::vector<Rational> supported;
+            bool first = true;
             for (size_t c = 0; c < support_[i].size(); ++c) {
                 if (!support_[i][c]) continue;
-                if (!supported.empty()) out << ',';
+                if (!first) out << ',';
+                first = false;
                 out << '"' << events_[i].candidates[c].duration.str() << '"';
-                supported.push_back(events_[i].candidates[c].duration);
             }
             out << "],\"eliminated_candidates\":[";
-            bool first = true;
+            first = true;
             for (size_t c = 0; c < support_[i].size(); ++c) {
                 // On a truncated search, an unobserved candidate is unverified,
                 // not disproven. Never expose partial search coverage as certainty.
@@ -327,6 +329,17 @@ public:
     }
 
 private:
+    // One ranked partial solution for the suffix starting at (event, elapsed):
+    // the candidate chosen for this event and the rank of the continuation
+    // in the next event's list.
+    struct RankedEntry {
+        double logScore = 0.0;
+        size_t candidate = 0;
+        size_t nextRank = 0;
+    };
+
+    using Layer = std::unordered_map<uint64_t, uint64_t>;
+
     int numerator_;
     int denominator_;
     int maxDenominator_;
@@ -337,57 +350,123 @@ private:
     std::set<std::string> ids_;
     std::vector<uint64_t> suffixMin_;
     std::vector<uint64_t> suffixMax_;
-    std::vector<size_t> choices_;
     std::vector<std::vector<bool>> support_;
     std::vector<Solution> solutions_;
     uint64_t nodesVisited_ = 0;
     uint64_t validCount_ = 0;
+    bool countSaturated_ = false;
     bool truncated_ = false;
 
-    void dfs(size_t eventIndex, uint64_t elapsedTicks, double logScore) {
-        if (nodesVisited_ >= config_.maxNodes) {
-            truncated_ = true;
-            return;
-        }
-        ++nodesVisited_;
-
-        if (elapsedTicks > targetTicks_) return;
-        const uint64_t remaining = targetTicks_ - elapsedTicks;
-        if (eventIndex == events_.size()) {
-            if (remaining == 0) recordSolution(logScore);
-            return;
-        }
-
-        if (suffixMin_[eventIndex] > remaining || suffixMax_[eventIndex] < remaining) return;
-
-        const InputEvent& event = events_[eventIndex];
-        for (size_t c = 0; c < event.candidates.size(); ++c) {
-            const Candidate& candidate = event.candidates[c];
-            if (candidate.ticks > remaining) continue;
-            if (suffixMin_[eventIndex + 1] > remaining - candidate.ticks ||
-                suffixMax_[eventIndex + 1] < remaining - candidate.ticks) continue;
-
-            choices_[eventIndex] = c;
-            dfs(eventIndex + 1, elapsedTicks + candidate.ticks,
-                logScore + std::log(candidate.confidence));
-            if (truncated_ && nodesVisited_ >= config_.maxNodes) return;
-        }
+    bool remainingFeasible(size_t eventIndex, uint64_t elapsed) const {
+        if (elapsed > targetTicks_) return false;
+        const uint64_t remaining = targetTicks_ - elapsed;
+        return suffixMin_[eventIndex] <= remaining && remaining <= suffixMax_[eventIndex];
     }
 
-    void recordSolution(double logScore) {
-        ++validCount_;
-        for (size_t i = 0; i < choices_.size(); ++i) support_[i][choices_[i]] = true;
+    // Exact dynamic program over (event index, elapsed ticks). The number of
+    // states is the number of distinct onset positions, not the number of
+    // candidate combinations, so dense ambiguous measures are solved exactly.
+    // max_nodes bounds the number of states.
+    void runDynamicProgram() {
+        const size_t n = events_.size();
 
-        Solution candidate{choices_, logScore};
-        if (solutions_.size() < config_.limit) {
-            solutions_.push_back(std::move(candidate));
-            return;
+        // Forward: reachable onsets and how many prefixes reach them.
+        std::vector<Layer> forward(n + 1);
+        forward[0][0] = 1;
+        nodesVisited_ = 1;
+        for (size_t i = 0; i < n; ++i) {
+            for (const auto& [elapsed, ways] : forward[i]) {
+                for (const Candidate& candidate : events_[i].candidates) {
+                    const uint64_t next = elapsed + candidate.ticks;
+                    if (!remainingFeasible(i + 1, next)) continue;
+                    auto [it, inserted] = forward[i + 1].try_emplace(next, 0);
+                    if (inserted && ++nodesVisited_ > config_.maxNodes) {
+                        truncated_ = true;
+                        return;
+                    }
+                    it->second = saturatingAdd(it->second, ways, countSaturated_);
+                }
+            }
         }
 
-        auto worst = std::min_element(solutions_.begin(), solutions_.end(),
-            [](const Solution& a, const Solution& b) { return a.logScore < b.logScore; });
-        if (worst != solutions_.end() && candidate.logScore > worst->logScore)
-            *worst = std::move(candidate);
+        // Backward: number of completions from each co-reachable onset.
+        std::vector<Layer> backward(n + 1);
+        if (forward[n].count(targetTicks_)) backward[n][targetTicks_] = 1;
+        for (size_t i = n; i-- > 0;) {
+            for (const auto& entry : forward[i]) {
+                const uint64_t elapsed = entry.first;
+                uint64_t completions = 0;
+                for (size_t c = 0; c < events_[i].candidates.size(); ++c) {
+                    auto next = backward[i + 1].find(elapsed + events_[i].candidates[c].ticks);
+                    if (next == backward[i + 1].end()) continue;
+                    // A candidate is supported iff some valid full assignment uses it.
+                    support_[i][c] = true;
+                    completions = saturatingAdd(completions, next->second, countSaturated_);
+                }
+                if (completions) backward[i][elapsed] = completions;
+            }
+        }
+
+        auto start = backward[0].find(0);
+        if (start == backward[0].end()) return;
+        validCount_ = start->second;
+
+        collectBestSolutions(backward);
+    }
+
+    // k-best by visual log-score over the co-reachable states only. Ties are
+    // broken by candidate order (confidence-sorted), event by event.
+    void collectBestSolutions(const std::vector<Layer>& backward) {
+        const size_t n = events_.size();
+        const size_t k = config_.limit;
+        std::vector<std::unordered_map<uint64_t, std::vector<RankedEntry>>> best(n + 1);
+        best[n][targetTicks_] = {RankedEntry{0.0, 0, 0}};
+
+        for (size_t i = n; i-- > 0;) {
+            for (const auto& entry : backward[i]) {
+                const uint64_t elapsed = entry.first;
+                std::vector<RankedEntry> merged;
+                for (size_t c = 0; c < events_[i].candidates.size(); ++c) {
+                    const Candidate& candidate = events_[i].candidates[c];
+                    auto next = best[i + 1].find(elapsed + candidate.ticks);
+                    if (next == best[i + 1].end()) continue;
+                    const double own = std::log(candidate.confidence);
+                    for (size_t r = 0; r < next->second.size(); ++r)
+                        merged.push_back(RankedEntry{own + next->second[r].logScore, c, r});
+                }
+                // Scores are compared after quantizing to 1e-9 so products that
+                // are equal in exact arithmetic (0.9*0.7 vs 0.7*0.9) tie
+                // deterministically instead of by floating-point summation order.
+                auto quantized = [](double score) { return std::llround(score * 1e9); };
+                auto better = [&](const RankedEntry& a, const RankedEntry& b) {
+                    const long long qa = quantized(a.logScore);
+                    const long long qb = quantized(b.logScore);
+                    if (qa != qb) return qa > qb;
+                    if (a.candidate != b.candidate) return a.candidate < b.candidate;
+                    return a.nextRank < b.nextRank;
+                };
+                const size_t keep = std::min(k, merged.size());
+                std::partial_sort(merged.begin(), merged.begin() + static_cast<std::ptrdiff_t>(keep),
+                                  merged.end(), better);
+                merged.resize(keep);
+                best[i][elapsed] = std::move(merged);
+            }
+        }
+
+        const auto& roots = best[0][0];
+        for (size_t rank = 0; rank < roots.size(); ++rank) {
+            Solution solution;
+            solution.logScore = roots[rank].logScore;
+            uint64_t elapsed = 0;
+            size_t r = rank;
+            for (size_t i = 0; i < n; ++i) {
+                const RankedEntry& step = best[i].at(elapsed)[r];
+                solution.choices.push_back(step.candidate);
+                elapsed += events_[i].candidates[step.candidate].ticks;
+                r = step.nextRank;
+            }
+            solutions_.push_back(std::move(solution));
+        }
     }
 
     void appendSolution(std::ostringstream& out, const Solution& solution) const {
@@ -462,7 +541,9 @@ int main(int argc, char** argv) {
                     } else if (token.rfind("max_nodes=", 0) == 0) {
                         config.maxNodes = parseUInt(token.substr(10), "max_nodes");
                     } else {
-                        events.push_back(parseEvent(token, static_cast<uint64_t>(6) * maxDenominator));
+                        if (maxDenominator < 2 || maxDenominator > 256 || !isPowerOfTwo(static_cast<uint64_t>(maxDenominator)))
+                            throw std::invalid_argument("max denominator must be a power of two from 2 to 256");
+                        events.push_back(parseEvent(token, ticksPerWholeFor(maxDenominator)));
                     }
                 }
 

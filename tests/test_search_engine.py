@@ -249,6 +249,32 @@ class RhythmSearchEngineTests(unittest.TestCase):
         self.assertEqual(len(result["patterns"]), 0)
         self.assertEqual(result["summary"]["truncated"], False)
 
+    def test_uncommon_ratio_in_exact_does_not_restrict_other_tuplets(self) -> None:
+        # 11:8 is generated on demand because exact names it, but that must
+        # not silently turn into a tuplet_ratios=11:8 filter that drops the
+        # triplet also requested by exact.
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@16:11:8": 1, "triplet@4": 1},
+            limit=10,
+        )
+        self.assertEqual(len(result["patterns"]), 2)
+        ratios = {
+            tuple(event["tuplet_ratio"] for event in pattern["events"])
+            for pattern in result["patterns"]
+        }
+        self.assertEqual(ratios, {("11:8", "3:2"), ("3:2", "11:8")})
+
+    def test_explicit_ratio_filter_still_excludes_inferred_exact_ratio(self) -> None:
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@16:11:8": 1, "triplet@4": 1},
+            tuplet_ratios=["3:2"],
+            limit=10,
+        )
+        self.assertEqual(len(result["patterns"]), 0)
+        self.assertFalse(result["summary"]["truncated"])
+
     def test_legacy_triplet_descriptor_and_pattern_remain_compatible(self) -> None:
         result = self.engine.search(
             "RESTS",
