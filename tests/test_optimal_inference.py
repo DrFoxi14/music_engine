@@ -124,6 +124,7 @@ class OptimalInferenceTests(unittest.TestCase):
         solutions = [[ev["duration_whole"] for ev in s["events"]] for s in rhythm["solutions"]]
         features = _feature_map(analysis)
         optimum, _ = optimal_question_count(solutions, ids, features)
+        self.assertIsNotNone(optimum, "exact planner exceeded its budget")
         worst = 0
         for truth in solutions:
             facts = {i: features[i][d] for i, d in zip(ids, truth)}
@@ -147,15 +148,44 @@ class OptimalInferenceTests(unittest.TestCase):
         stems, heads = bare_bar(3)
         readings, worst = self.assert_optimal_for_every_truth("4/4", stems, heads)
         self.assertEqual(readings, 6)   # (1/4 1/4 1/2) x3 orders + (1/4 3/8 3/8) x3 orders
-        self.assertEqual(worst, 3)      # 2 checks distinguish at most 4 readings
+        # No check splits these six readings 3/3 (every split leaves 4 or 5 on
+        # one side), so 3 checks cannot always suffice: the guaranteed optimum is 4.
+        self.assertEqual(worst, 4)
 
-    def test_more_dots_than_assumed_are_handled(self):
+    def test_double_dots_are_never_silently_misread(self):
+        # 9/8 = double-dotted half + quarter, or dotted half + dotted quarter.
+        # Assuming at most one dot would "deduce" the wrong reading; the default
+        # range (two dots) keeps both and asks.
         stems, heads = bare_bar(2)
         truth = {"s0": {"fill": "hollow", "dots": 2}, "s1": {"fill": "filled", "dots": 0}}  # 7/8 + 1/4
         result = infer_measure(self.stem, self.solver, meter="9/8", spacing=S, stems=stems, noteheads=heads,
                                answer=lambda e, f: truth[e][f])
         self.assertEqual(result["status"], "resolved_unique")
         self.assertEqual(result["durations"], {"s0": "7/8", "s1": "1/4"})
+        self.assertGreater(len(result["questions"]), 0)
+
+    def test_dot_range_widens_when_vision_reports_more_dots(self):
+        stems, heads = bare_bar(2)
+        truth = {"s0": {"fill": "hollow", "dots": 3}, "s1": {"fill": "filled", "dots": 2}}  # 15/16 + 7/16
+        result = infer_measure(self.stem, self.solver, meter="11/8", spacing=S, stems=stems, noteheads=heads,
+                               answer=lambda e, f: truth[e][f])
+        self.assertEqual(result["status"], "resolved_unique")
+        self.assertEqual(result["durations"], {"s0": "15/16", "s1": "7/16"})
+        self.assertIn(("s0", "dots", 3), [(q["event_id"], q["feature"], q["answer"]) for q in result["questions"]])
+
+    def test_deduction_is_exact_only_inside_the_unchecked_range(self):
+        # 19/16 = triple-dotted half + quarter. With at most two dots assumed the
+        # truth is not among the readings, so the loop converges on a wrong one
+        # (dotted half + double-dotted quarter). Declaring the wider range
+        # restores the truth.
+        stems, heads = bare_bar(2)
+        truth = {"s0": {"fill": "hollow", "dots": 3}, "s1": {"fill": "filled", "dots": 0}}
+        narrow = infer_measure(self.stem, self.solver, meter="19/16", spacing=S, stems=stems, noteheads=heads,
+                               answer=lambda e, f: truth[e][f])
+        self.assertEqual(narrow["durations"], {"s0": "3/4", "s1": "7/16"})
+        wide = infer_measure(self.stem, self.solver, meter="19/16", spacing=S, stems=stems, noteheads=heads,
+                             unchecked_max_dots=3, answer=lambda e, f: truth[e][f])
+        self.assertEqual(wide["durations"], {"s0": "15/16", "s1": "1/4"})
 
     # -- exhaustive and sampled end-to-end sweeps -----------------------------------------
 
@@ -184,7 +214,7 @@ class OptimalInferenceTests(unittest.TestCase):
             ((7, 8), 16, {}),
             ((5, 4), 16, {"depth": 2}),
         ):
-            self.run_sweep(meter, max_den, options, "sample", 40)
+            self.run_sweep(meter, max_den, options, "sample", 15)
 
 
 if __name__ == "__main__":

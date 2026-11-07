@@ -310,7 +310,7 @@ with StemFirstClient("./stem_first_engine") as stem, OMRConstraintClient("./omr_
 
 1. The Visual Engine reports cheap structure: stems, flags, beams, notehead positions, rests and tuplet brackets. Head fill and augmentation dots are left unchecked (`unchecked=fill,dots`), so a bare stem may be a quarter, a half, or either one dotted.
 2. The solver keeps every reading that fills the bar exactly. Events with one surviving duration are `implied`, and nobody looks at them.
-3. While several readings remain, one check is asked: the head fill or the dot count of one event. With at most 100 readings the order is exactly optimal (minimax over all readings); above that the check with the smallest worst case is chosen. If the Visual Engine reports more dots than assumed, the range widens automatically.
+3. While several readings remain, one check is asked: the head fill or the dot count of one event. With at most 100 readings the order is exactly optimal (minimax over all readings, by iterative deepening). Above 100 readings, or if the exact planner exceeds its budget, the check with the smallest worst case is chosen.
 4. Pitch follows, from the notehead positions (`pitch_inputs` → `pitch_context_engine`).
 
 ```python
@@ -322,7 +322,9 @@ result["durations"]   # {"s0": "1/4", "s1": "1/2", "s2": "1/4"}  - the half is i
 result["questions"]   # []
 ```
 
-Without the hint the same bar has 6 readings ((¼ ¼ ½) and (¼ ⅜ ⅜) in any order). It needs 3 checks in the worst case, which is the minimum, because 2 two-way checks separate at most 4 readings.
+Without the hint the same bar has 6 readings ((¼ ¼ ½) and (¼ ⅜ ⅜) in any order). No single check splits them 3/3, so the guaranteed minimum is 4 checks; the exact planner achieves it for every possible truth.
+
+Deductions are exact relative to the unchecked range. `unchecked_max_dots` defaults to 2: with 1, a double-dotted half plus a quarter in 9/8 would be "deduced" as a dotted half plus a dotted quarter. If the Visual Engine reports more dots than assumed, the range widens automatically.
 
 The solver accepts any exact rational duration: its grid is the lcm of every candidate denominator, so a 13-tuplet or a 9-tuplet inside a 9-tuplet are exact. Each event also reports `solution_counts` (how many valid readings use each candidate) and `determined`.
 

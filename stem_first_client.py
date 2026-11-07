@@ -322,38 +322,102 @@ def plan_checks(analysis: Mapping[str, Any], rhythm: Mapping[str, Any]) -> dict[
     return {"implied": implied, "checks": checks, "next": checks[0] if checks else None}
 
 
+class PlanningBudgetExceeded(Exception):
+    """The exact planner gave up; callers fall back to the greedy check."""
+
+
 def optimal_question_count(solutions: Sequence[Sequence[str]], event_ids: Sequence[str],
-                           features: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> tuple[int, tuple[str, str] | None]:
-    """Exact minimax: fewest checks that always identify the reading, and the first check."""
+                           features: Mapping[str, Mapping[str, Mapping[str, Any]]],
+                           budget: int = 50_000) -> tuple[int | None, tuple[str, str] | None]:
+    """Exact minimax: fewest checks that always identify the reading, and the first check.
+
+    Iterative deepening: "can every reading be told apart within d checks?"
+    for d = information bound, d + 1, ... Checks that split the readings the
+    same way are merged, and a branch is cut as soon as one of its parts is
+    larger than d - 1 more checks could ever separate. Returns (None, None)
+    when `budget` subproblems are exceeded.
+    """
     solutions = [tuple(s) for s in solutions]
-    memo: dict[frozenset[int], tuple[int, tuple[str, str] | None]] = {}
+    n = len(solutions)
+    if n <= 1:
+        return 0, None
+    checks: list[tuple[tuple[str, str], list[Any]]] = []
+    seen_vectors = set()
+    for i, event_id in enumerate(event_ids):
+        for feature in FEATURES:
+            values = [features[event_id][s[i]][feature] for s in solutions]
+            if "any" in values or len(set(values)) < 2:
+                continue
+            labels: dict[Any, int] = {}
+            canonical = tuple(labels.setdefault(v, len(labels)) for v in values)
+            if canonical in seen_vectors:
+                continue
+            seen_vectors.add(canonical)
+            checks.append(((event_id, feature), list(canonical)))
+    if not checks:
+        return None, None
+    branching = max(max(v) + 1 for _, v in checks)
 
-    def solve(subset: frozenset[int]) -> tuple[int, tuple[str, str] | None]:
+    def bound(size: int) -> int:
+        k, reach = 0, 1
+        while reach < size:
+            reach *= branching
+            k += 1
+        return k
+
+    memo: dict[tuple[frozenset[int], int], bool] = {}
+    calls = [0]
+
+    def split(subset: frozenset[int], values: list[int]) -> list[frozenset[int]]:
+        parts: dict[int, set[int]] = {}
+        for s in subset:
+            parts.setdefault(values[s], set()).add(s)
+        return [frozenset(p) for p in parts.values()]
+
+    def feasible(subset: frozenset[int], depth: int) -> tuple[str, str] | bool:
         if len(subset) <= 1:
-            return 0, None
-        if subset in memo:
-            return memo[subset]
-        best: tuple[int, tuple[str, str] | None] = (len(subset), None)
-        for i, event_id in enumerate(event_ids):
-            for feature in FEATURES:
-                parts: dict[Any, set[int]] = {}
-                for s in subset:
-                    value = features[event_id][solutions[s][i]][feature]
-                    parts.setdefault(value, set()).add(s)
-                if len(parts) < 2 or "any" in parts:
-                    continue
-                cost = 1 + max(solve(frozenset(p))[0] for p in parts.values())
-                if cost < best[0]:
-                    best = (cost, (event_id, feature))
-        memo[subset] = best
-        return best
+            return True
+        if depth == 0 or bound(len(subset)) > depth:
+            return False
+        key = (subset, depth)
+        if key in memo:
+            return memo[key]
+        calls[0] += 1
+        if calls[0] > budget:
+            raise PlanningBudgetExceeded
+        options = []
+        for check, values in checks:
+            parts = split(subset, values)
+            if len(parts) < 2:
+                continue
+            largest = max(len(p) for p in parts)
+            if bound(largest) > depth - 1:
+                continue
+            options.append((largest, check, parts))
+        options.sort(key=lambda o: o[0])
+        result: tuple[str, str] | bool = False
+        for _, check, parts in options:
+            if all(feasible(p, depth - 1) is not False for p in sorted(parts, key=len, reverse=True)):
+                result = check
+                break
+        memo[key] = result
+        return result
 
-    return solve(frozenset(range(len(solutions))))
+    try:
+        depth = bound(n)
+        while depth <= n:
+            first = feasible(frozenset(range(n)), depth)
+            if first is not False:
+                return depth, first if isinstance(first, tuple) else None
+            depth += 1
+    except PlanningBudgetExceeded:
+        return None, None
+    return None, None
 
 
 def infer_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: str, spacing: float,
                   answer: Any = None, known: Mapping[str, Mapping[str, Any]] | None = None,
-                  unchecked: Iterable[str] = ("fill", "dots"), unchecked_max_dots: int = 1,
+                  unchecked: Iterable[str] = ("fill", "dots"), unchecked_max_dots: int = 2,
                   max_note_denominator: int = 256, **elements: Any) -> dict[str, Any]:
     """Read one voice of one measure asking the Visual Engine as little as possible.
 
@@ -364,6 +428,10 @@ def infer_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: st
        With <= 100 readings the question order is exactly optimal (minimax).
     `known` holds facts the Visual Engine volunteers up front, per event:
     {"fill": ..., "dots": ..., "duration": ...}.
+
+    Deductions are exact relative to the unchecked range: with
+    unchecked_max_dots=2 a triple-dotted note could be mistaken for another
+    reading that fills the bar. Raise it when such notes are expected.
     """
     unchecked = tuple(unchecked)
     analysis = stem_client.analyze(spacing, meter=meter, unchecked=unchecked,
