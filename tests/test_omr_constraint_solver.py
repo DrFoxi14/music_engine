@@ -245,6 +245,72 @@ class OMRConstraintSolverTests(unittest.TestCase):
         for solution in result["solutions"]:
             total = sum(Fraction(e["duration_whole"]) for e in solution["events"])
             self.assertEqual(total, 1)
+    def test_quintuplet_durations_are_exact(self) -> None:
+        result = self.solver.resolve(
+            "4/4",
+            [{"id": f"q{i}", "candidates": [{"duration": "1/5"}, {"duration": "1/4"}]} for i in range(5)],
+        )
+        self.assertEqual(result["status"], "resolved_unique")
+        self.assertTrue(all(e["duration_whole"] == "1/5" for e in result["solutions"][0]["events"]))
+
+    def test_spurious_event_can_be_removed(self) -> None:
+        result = self.solver.resolve(
+            "4/4",
+            [
+                {"id": "a", "candidates": [{"duration": "1/2"}]},
+                {"id": "b", "candidates": [{"duration": "1/4"}]},
+                {"id": "dup", "candidates": [{"duration": "1/4", "confidence": 0.6},
+                                             {"duration": "none", "confidence": 0.4}]},
+                {"id": "c", "candidates": [{"duration": "1/4"}]},
+            ],
+        )
+        self.assertEqual(result["status"], "resolved_unique")
+        dup = result["solutions"][0]["events"][2]
+        self.assertFalse(dup["present"])
+        self.assertIn("symbol_existence", result["event_support"][2]["suggested_visual_checks"])
+
+    def test_missing_time_is_reported(self) -> None:
+        result = self.solver.resolve(
+            "4/4",
+            [{"id": "a", "candidates": [{"duration": "1/2"}]}, {"id": "b", "candidates": [{"duration": "1/4"}]}],
+        )
+        self.assertEqual(result["status"], "inconsistent")
+        self.assertEqual(result["gap"], "missing")
+        self.assertEqual(result["gap_whole"], "1/4")
+
+    def test_excess_time_is_reported(self) -> None:
+        result = self.solver.resolve(
+            "3/4",
+            [{"id": "a", "candidates": [{"duration": "1/2"}]}, {"id": "b", "candidates": [{"duration": "1/2"}]}],
+        )
+        self.assertEqual(result["gap"], "excess")
+        self.assertEqual(result["gap_whole"], "1/4")
+
+    def _dotted_pair_measure(self, **kw):
+        # 2/4: [dotted eighth, sixteenth] [eighth, eighth]; the sixteenth's short beam was missed,
+        # so b is read as an eighth: the measure is 1/16 too long, and any of b, c, d could be shortened
+        c8 = [{"duration": "1/8", "confidence": 0.6}, {"duration": "1/16", "confidence": 0.4}]
+        events = [
+            {"id": "a", "candidates": [{"duration": "3/16", "confidence": 0.9}, {"duration": "1/8", "confidence": 0.1}]},
+            {"id": "b", "candidates": c8}, {"id": "c", "candidates": c8}, {"id": "d", "candidates": c8},
+        ]
+        return self.solver.resolve("2/4", events, limit=5, **kw)
+
+    def test_beam_groups_prefer_beat_aligned_solution(self) -> None:
+        plain = self._dotted_pair_measure()
+        top = plain["solutions"][0]["log_visual_score"]
+        self.assertEqual(sum(abs(s["log_visual_score"] - top) < 1e-9 for s in plain["solutions"]), 3)
+        grouped = self._dotted_pair_measure(beat="1/4", groups=[["a", "b"], ["c", "d"]])
+        best = grouped["solutions"][0]["events"]
+        self.assertEqual([e["duration_whole"] for e in best], ["3/16", "1/16", "1/8", "1/8"])
+        self.assertGreater(best and grouped["solutions"][0]["log_visual_score"],
+                           grouped["solutions"][1]["log_visual_score"] + 1.0)
+
+    def test_groups_require_known_consecutive_events(self) -> None:
+        with self.assertRaises(ValueError):
+            self._dotted_pair_measure(beat="1/4", groups=[["a", "c"]])
+        with self.assertRaises(ValueError):
+            self._dotted_pair_measure(groups=[["a", "b"]])
 
 
 if __name__ == "__main__":

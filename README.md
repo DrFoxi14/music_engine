@@ -10,6 +10,7 @@ A C++17 toolkit for exact rhythmic pattern generation, enumeration, and filtered
 - `search_engine.cpp` + `rhythm_space.hpp` — the complete rhythmic space of a measure (nested tuplets, multiple dots, any ratio) with exact counting, indexing, sampling and template search; plus the legacy filtered SEARCH.
 - `math_engine.cpp` — compact dynamic-programming index for counting and retrieving rhythmic patterns by index, with separate note-only and at-least-one-rest categories.
 - `*_client.py` — Python clients for each engine; `stem_first_client.py` also has pipeline helpers.
+- `omr_dialogue/` — the Vision ⇄ Search Engine dialogue after Paul's Vision specification: a synthetic Vision that reports only what is in the image (per-property confidence, `unknown` kept unknown, never a duration), targeted re-examination, and `positions` constraints for the Search Engine. See `omr_dialogue/README.md`. `infer_measure()` in `stem_first_client.py` is the solver-based counterpart (exact counts, minimax question order).
 
 ### OMR pipeline (no visual detection here)
 
@@ -122,6 +123,7 @@ All filters are optional unless noted.
 | `first`, `last` | First / last event descriptor | `first=note@2 last=note@4` |
 | `prefix`, `suffix` | Ordered beginning / ending sequence | `prefix=note@2>note@4` |
 | `contains` | Ordered contiguous sequence anywhere in the pattern | `contains=note@2>triplet@8` |
+| `positions` | Allowed descriptors for each event in order (`|` alternatives, `>` next event, `*` anything, `#NRN` a tuplet slot mask); fixes the event count | `positions=note@4>note@2>note@4|note@8` |
 | `limit` | Maximum results returned (1–1000; default 50) | `limit=100` |
 | `offset` | Skip this many matches before returning results | `offset=100` |
 | `max_nodes` | Search work budget (default 200,000; maximum 10,000,000) | `max_nodes=1000000` |
@@ -407,7 +409,13 @@ The example resolves the last note to a quarter note because the other candidate
 
 The solver uses an exact dynamic program over (event index, elapsed ticks) instead of enumerating candidate combinations. Its cost grows with the number of distinct onset positions, so dense measures with many ambiguous events (for example 24 events with three candidates each) are counted and resolved exactly. `valid_assignments` is the exact number of valid readings (`valid_assignments_is_lower_bound` is true only if the count exceeds 64-bit range), every candidate is classified as supported or eliminated, and `solutions` holds the `limit` best readings by visual log-score. `max_nodes` bounds the number of DP states; exceeding it yields `incomplete`.
 
-Durations are exact fractions on the same grid as Search Engine: power-of-two note values up to the maximum note denominator, their dotted values, and tuplet slots with up to 12 notes. For example, a sixteenth-note quintuplet slot is `1/20`, a septuplet slot `1/28`. A duration such as `1/13` is rejected.
+Durations are exact fractions. The grid starts from 27720 ticks per whole note (lcm of 1..12, the Search Engine grid) times the maximum note denominator, and is extended by the lcm of every candidate denominator, so any rational duration is exact: a 13-tuplet slot, or nested tuplets such as 9 inside 9 (`1/81`). Only durations whose common grid would overflow are rejected.
+
+A candidate may also be `{"duration": "none"}`: the Visual Engine is not sure the symbol exists at all (a duplicated or spurious notehead). It occupies no time; a solution that drops it reports `"present": false` for that event and suggests the `symbol_existence` check.
+
+When no assignment fills the measure, the result says why: `gap` is `missing` (even the longest candidates leave `gap_whole` unfilled: a symbol was probably missed), `excess` (even the shortest candidates overflow by `gap_whole`: a spurious symbol or a missed barline), or `no_exact_combination`. `min_total_whole` and `max_total_whole` are always reported.
+
+Beam groups are an optional preference: pass `beat="1/4"` (or `"3/8"` in compound meters) and `groups=[["n2", "n3"], ...]`, lists of consecutive events under one beam. Engraving starts and ends a beamed group on a beat, so each group edge that falls off the beat multiplies the visual score by `group_penalty` (default 0.2). This tells apart solutions that fill the measure equally well, e.g. which eighth of a measure is really the sixteenth whose short beam was missed. Protocol tokens: `beat=1/4 group_penalty=0.2 group=n2,n3`.
 
 Statuses:
 
@@ -511,7 +519,7 @@ with PitchContextClient("./pitch_context_engine") as engine:
 
 ### Accidental-to-note assignment
 
-Accidental association uses page geometry, not harmony as a hard rule. Candidate noteheads must be to the right of the accidental glyph and within a staff-spacing-based vertical/horizontal window. An accidental cannot skip over a notehead column: only the first notehead column to its right is considered, plus noteheads sharing that column's `chord_id` or `stem_id` (chord noteheads displaced around a shared stem). A repeated note just after an altered note is therefore never a competing candidate. Candidates are ranked by vertical anchor distance, with horizontal distance as a weaker tie-breaker. If the Visual Engine can estimate the symbol's musical anchor independently of its bounding-box center (for example, the bulb/center topology of a flat or the center of a natural), pass it as `anchor_y`.
+Accidental association uses page geometry, not harmony as a hard rule. Candidate noteheads must be to the right of the accidental glyph and within a staff-spacing-based vertical/horizontal window. An accidental is engraved right before its note: a candidate further right is blocked by a candidate at least half a space nearer on the same (or a closer) row, so a repeated note just after an altered note is never a competing candidate. Members of one chord (same `chord_id` or `stem_id`) never block each other, because chord heads are displaced around a shared stem and all their accidentals stand left of the chord. Candidates are ranked by vertical anchor distance, with horizontal distance as a weaker tie-breaker. If the Visual Engine can estimate the symbol's musical anchor independently of its bounding-box center (for example, the bulb/center topology of a flat or the center of a natural), pass it as `anchor_y`.
 
 - A clear geometric winner is assigned.
 - If two noteheads have similar geometric scores (for example, the accidental glyph overlaps two staff positions), the result is `ambiguous`; both candidate noteheads are returned for visual reinspection.

@@ -20,7 +20,7 @@ class SearchEngineClient:
         "min_event_ticks", "max_event_ticks", "durations", "triplet_patterns",
         "tuplet_patterns", "tuplet_ratios",
         "kinds", "denominators", "subdivisions", "exact", "first", "last",
-        "prefix", "suffix", "contains",
+        "prefix", "suffix", "contains", "positions",
     }
 
     def __init__(
@@ -63,6 +63,9 @@ class SearchEngineClient:
                 encoded = value
             else:
                 raise TypeError("exact must be a mapping like {'note@2': 1} or a string")
+        elif key == "positions":
+            # [["note@4", "note@8"], ["rest@4"], ["*"]]: allowed descriptors per event
+            encoded = value if isinstance(value, str) else ">".join("|".join(str(a) for a in alts) for alts in value)
         elif key in {"prefix", "suffix", "contains"}:
             encoded = ">".join(str(item) for item in value) if not isinstance(value, str) else value
         elif key in {"durations", "triplet_patterns", "tuplet_patterns", "tuplet_ratios", "kinds", "denominators", "subdivisions"}:

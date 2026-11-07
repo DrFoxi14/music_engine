@@ -121,6 +121,13 @@ struct Solution {
 struct SearchConfig {
     uint64_t maxNodes = 200000;
     size_t limit = 20;
+    // Beam groups (optional). Engraving puts the start and the end of a beamed
+    // group on a beat: a group that would start or end off the beat is
+    // possible (syncopation) but unlikely, so each such edge multiplies the
+    // visual score by groupPenalty instead of being forbidden.
+    Rational beat{0, 1};
+    double groupPenalty = 0.2;
+    std::vector<std::vector<std::string>> groups;
 };
 
 double parseConfidence(const std::string& text) {
@@ -145,7 +152,16 @@ InputEvent parseEvent(const std::string& token) {
 
     for (const std::string& rawCandidate : split(token.substr(equals + 1), '|')) {
         const size_t colon = rawCandidate.find(':');
-        const Rational duration = parseFraction(rawCandidate.substr(0, colon));
+        const std::string durationText = rawCandidate.substr(0, colon);
+        if (durationText == "none") {
+            // The Visual Engine may be wrong that a symbol exists at all (a
+            // duplicated or spurious notehead). "none" occupies no time.
+            const double confidence =
+                colon == std::string::npos ? 1.0 : parseConfidence(rawCandidate.substr(colon + 1));
+            event.candidates.push_back(Candidate{Rational(0, 1), 0, confidence});
+            continue;
+        }
+        const Rational duration = parseFraction(durationText);
         const double confidence =
             colon == std::string::npos ? 1.0 : parseConfidence(rawCandidate.substr(colon + 1));
 
@@ -182,6 +198,7 @@ std::vector<std::string> suggestedChecks(const std::vector<Rational>& durations)
         }
     }
     if (dottedPair) checks.push_back("augmentation_dot");
+    if (values.count("0/1")) checks.push_back("symbol_existence");
     if (checks.empty()) checks.push_back("reinspect_symbol_and_local_context");
     return checks;
 }
@@ -242,6 +259,7 @@ public:
         ticksPerWhole_ = ticksPerWholeFor(maxDenominator_);
         for (const auto& event : events_)
             for (const auto& candidate : event.candidates) ticksPerWhole_ = checkedLcm(ticksPerWhole_, candidate.duration.d);
+        if (config_.beat.n) ticksPerWhole_ = checkedLcm(ticksPerWhole_, config_.beat.d);
         if (static_cast<uint64_t>(numerator_) > kMaxTargetTicks / ticksPerWhole_)
             throw std::invalid_argument("measure is too long for this grid");
         for (auto& event : events_) {
@@ -280,6 +298,24 @@ public:
             suffixMax_[i] = suffixMax_[i + 1] + maximum;
         }
 
+        if (config_.beat.n) beatTicks_ = config_.beat.n * (ticksPerWhole_ / config_.beat.d);
+        groupStart_.assign(events_.size(), false);
+        groupEnd_.assign(events_.size(), false);
+        for (const auto& group : config_.groups) {
+            std::vector<size_t> at;
+            for (const auto& id : group) {
+                size_t i = 0;
+                while (i < events_.size() && events_[i].id != id) ++i;
+                if (i == events_.size()) throw std::invalid_argument("group names an unknown event: " + id);
+                at.push_back(i);
+            }
+            for (size_t k = 1; k < at.size(); ++k)
+                if (at[k] != at[k - 1] + 1)
+                    throw std::invalid_argument("a group must list consecutive events in order");
+            groupStart_[at.front()] = true;
+            groupEnd_[at.back()] = true;
+        }
+
         support_.resize(events_.size());
         candidateCounts_.resize(events_.size());
         for (size_t i = 0; i < events_.size(); ++i) {
@@ -304,8 +340,24 @@ public:
             << ",\"valid_assignments_is_lower_bound\":" << (countSaturated_ ? "true" : "false")
             << ",\"valid_assignments_log2\":" << (validLog2_ == kNoCount ? std::string("null") : std::to_string(validLog2_))
             << ",\"solutions_limited_by_memory\":" << (solutionsLimitedByMemory_ ? "true" : "false")
-            << ",\"truncated\":" << (truncated_ ? "true" : "false")
-            << ",\"solutions\":[";
+            << ",\"min_total_whole\":\"" << Rational(suffixMin_[0], ticksPerWhole_).str()
+            << "\",\"max_total_whole\":\"" << Rational(suffixMax_[0], ticksPerWhole_).str() << "\""
+            << ",\"truncated\":" << (truncated_ ? "true" : "false");
+        if (validCount_ == 0 && validLog2_ == kNoCount && !truncated_) {
+            // Why the measure cannot close: too little time even with every longest
+            // candidate (a symbol was missed), too much even with every shortest (a
+            // spurious symbol or a missed barline), or no exact combination.
+            if (suffixMax_[0] < targetTicks_) {
+                out << ",\"gap\":\"missing\",\"gap_whole\":\""
+                    << Rational(targetTicks_ - suffixMax_[0], ticksPerWhole_).str() << "\"";
+            } else if (suffixMin_[0] > targetTicks_) {
+                out << ",\"gap\":\"excess\",\"gap_whole\":\""
+                    << Rational(suffixMin_[0] - targetTicks_, ticksPerWhole_).str() << "\"";
+            } else {
+                out << ",\"gap\":\"no_exact_combination\"";
+            }
+        }
+        out << ",\"solutions\":[";
         for (size_t s = 0; s < solutions_.size(); ++s) {
             if (s) out << ',';
             appendSolution(out, solutions_[s]);
@@ -422,6 +474,9 @@ private:
     std::vector<InputEvent> events_;
     uint64_t ticksPerWhole_;
     uint64_t targetTicks_ = 0;
+    uint64_t beatTicks_ = 0;
+    std::vector<bool> groupStart_;
+    std::vector<bool> groupEnd_;
     std::set<std::string> ids_;
     std::vector<uint64_t> suffixMin_;
     std::vector<uint64_t> suffixMax_;
@@ -560,7 +615,14 @@ private:
                     const long idx = after.find(layer.keys[j] + candidate.ticks);
                     if (idx < 0) continue;
                     const size_t base = static_cast<size_t>(idx) * k;
-                    const double own = std::log(candidate.confidence);
+                    double own = std::log(candidate.confidence);
+                    if (beatTicks_) {
+                        // Beam groups prefer to start and end on a beat; the DP
+                        // state is the onset, so the penalty is exact here.
+                        if (groupStart_[i] && layer.keys[j] % beatTicks_ != 0) own += std::log(config_.groupPenalty);
+                        if (groupEnd_[i] && (layer.keys[j] + candidate.ticks) % beatTicks_ != 0)
+                            own += std::log(config_.groupPenalty);
+                    }
                     for (uint32_t r = 0; r < used[i + 1][static_cast<size_t>(idx)]; ++r)
                         merged.push_back(RankedEntry{own + best[i + 1][base + r].logScore,
                                                      static_cast<uint32_t>(c), r});
@@ -598,7 +660,8 @@ private:
             if (i) out << ',';
             const Candidate& candidate = events_[i].candidates[solution.choices[i]];
             out << "{\"event_id\":\"" << jsonEscape(events_[i].id)
-                << "\",\"duration_whole\":\"" << candidate.duration.str()
+                << "\",\"present\":" << (candidate.ticks ? "true" : "false")
+                << ",\"duration_whole\":\"" << candidate.duration.str()
                 << "\",\"onset_whole\":\"" << Rational(onset, ticksPerWhole_).str()
                 << "\",\"confidence\":" << candidate.confidence << '}';
             onset += candidate.ticks;
@@ -662,6 +725,13 @@ int main(int argc, char** argv) {
                         config.limit = static_cast<size_t>(parseUInt(token.substr(6), "limit"));
                     } else if (token.rfind("max_nodes=", 0) == 0) {
                         config.maxNodes = parseUInt(token.substr(10), "max_nodes");
+                    } else if (token.rfind("beat=", 0) == 0) {
+                        config.beat = parseFraction(token.substr(5));
+                    } else if (token.rfind("group_penalty=", 0) == 0) {
+                        config.groupPenalty = parseConfidence(token.substr(14));
+                    } else if (token.rfind("group=", 0) == 0) {
+                        config.groups.push_back(split(token.substr(6), ','));
+                        if (config.groups.back().empty()) throw std::invalid_argument("empty group");
                     } else {
                         if (maxDenominator < 2 || maxDenominator > 256 || !isPowerOfTwo(static_cast<uint64_t>(maxDenominator)))
                             throw std::invalid_argument("max denominator must be a power of two from 2 to 256");

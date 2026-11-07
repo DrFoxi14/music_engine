@@ -466,6 +466,36 @@ Association associateAccidental(size_t accidentalIndex, const StaffConfig& cfg,
         if (std::isfinite(cost)) result.candidates.push_back({i, cost});
     }
 
+    // An accidental is engraved right before its note: a candidate further right on (nearly) the same
+    // staff position is blocked by a nearer candidate there; that later note is in the accidental's
+    // measure-local scope, not its owner. (Without this, a flat 4 px from its note and the same pitch
+    // 38 px further were "ambiguous", and neither note got the flat.)
+    auto gapOf = [&](size_t i) {
+        return (notes[i].box.valid ? notes[i].box.left : notes[i].x) - accidental.box.right;
+    };
+    auto rowOf = [&](size_t i) { return std::abs(notes[i].y - accidental.verticalAnchor()); };
+    std::vector<AssociationCandidate> unblocked;
+    // Members of one chord (same chord_id or stem_id) never block each other: chord heads are
+    // displaced around a shared stem and all their accidentals stand left of the chord, so
+    // horizontal distance says nothing about which head an accidental belongs to.
+    auto sameChord = [&](size_t a, size_t b) {
+        return (!notes[a].chordId.empty() && notes[a].chordId == notes[b].chordId) ||
+               (!notes[a].stemId.empty() && notes[a].stemId == notes[b].stemId);
+    };
+    for (const auto& c : result.candidates) {
+        bool blocked = false;
+        for (const auto& o : result.candidates) {
+            if (o.noteIndex != c.noteIndex && !sameChord(o.noteIndex, c.noteIndex) &&
+                gapOf(o.noteIndex) + 0.5 * cfg.spacing < gapOf(c.noteIndex) &&
+                rowOf(o.noteIndex) <= rowOf(c.noteIndex) + 0.25 * cfg.spacing) {
+                blocked = true;
+                break;
+            }
+        }
+        if (!blocked) unblocked.push_back(c);
+    }
+    result.candidates = std::move(unblocked);
+
     std::stable_sort(result.candidates.begin(), result.candidates.end(),
         [](const AssociationCandidate& a, const AssociationCandidate& b) {
             return a.cost < b.cost;
@@ -475,29 +505,6 @@ Association associateAccidental(size_t accidentalIndex, const StaffConfig& cfg,
         result.status = "orphan";
         return result;
     }
-
-    // An accidental cannot skip over a notehead column: it belongs to the
-    // first notehead column to its right. Later noteheads at the same staff
-    // position (repeated notes) are shadowed and are not candidates. Members
-    // of the nearest note's chord (same chord_id or stem_id) stay candidates,
-    // because chord noteheads may be displaced around a shared stem.
-    auto gapOf = [&](const NoteInput& note) {
-        return (note.box.valid ? note.box.left : note.x) - accidental.box.right;
-    };
-    size_t nearest = result.candidates.front().noteIndex;
-    for (const auto& candidate : result.candidates) {
-        if (gapOf(notes[candidate.noteIndex]) < gapOf(notes[nearest])) nearest = candidate.noteIndex;
-    }
-    const NoteInput& nearestNote = notes[nearest];
-    const double columnLimit = nearestNote.x + 0.30 * cfg.spacing;
-    result.candidates.erase(std::remove_if(result.candidates.begin(), result.candidates.end(),
-        [&](const AssociationCandidate& candidate) {
-            const NoteInput& note = notes[candidate.noteIndex];
-            if (note.x <= columnLimit) return false;
-            if (!note.chordId.empty() && note.chordId == nearestNote.chordId) return false;
-            if (!note.stemId.empty() && note.stemId == nearestNote.stemId) return false;
-            return true;
-        }), result.candidates.end());
 
     const double best = result.candidates.front().cost;
     const double second = result.candidates.size() > 1
@@ -961,6 +968,7 @@ private:
                   const std::vector<std::set<int>>& alterationOptionsByNote,
                   bool reviewRequired) const {
         (void)key;
+        (void)stems;
         struct ChordFlag {
             std::string chordId;
             size_t noteA;
