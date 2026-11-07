@@ -141,9 +141,37 @@ class OMRConstraintSolverTests(unittest.TestCase):
         result = self.solver.resolve("4/4", events)
         self.assertEqual(result["status"], "resolved_unique")
 
-    def test_unrepresentable_duration_is_rejected(self) -> None:
+    def test_any_tuplet_and_nested_tuplets_are_exact(self) -> None:
+        # A 13-tuplet of sixteenths in one beat: slot 1/52.
+        result = self.solver.resolve("1/4", [{"id": f"n{i}", "candidates": [{"duration": "1/52"}]} for i in range(13)])
+        self.assertEqual(result["status"], "resolved_unique")
+        # 9:8 sixteenths whose last two slots hold a 9:8 of sixty-fourths: 7 x 1/18 + 9 x 1/81.
+        events = [{"id": f"o{i}", "candidates": [{"duration": "1/18"}]} for i in range(7)]
+        events += [{"id": f"i{i}", "candidates": [{"duration": "1/81"}, {"duration": "1/64"}]} for i in range(9)]
+        result = self.solver.resolve("1/2", events, max_note_denominator=64)
+        self.assertEqual(result["status"], "resolved_unique")
+        self.assertEqual(result["event_support"][-1]["eliminated_candidates"], ["1/64"])
+
+    def test_grid_overflow_is_rejected(self) -> None:
+        events = [{"id": f"p{i}", "candidates": [{"duration": f"1/{p}"}]}
+                  for i, p in enumerate((999983, 999979, 999961))]
         with self.assertRaises(ValueError):
-            self.solver.resolve("4/4", [{"id": "a", "candidates": [{"duration": "1/13"}]}])
+            self.solver.resolve("4/4", events)
+
+    def test_solution_counts_and_determined_events(self) -> None:
+        # Three bare stems in 4/4: each could be a quarter or a half.
+        bare = [{"id": k, "candidates": [{"duration": "1/4"}, {"duration": "1/2"}]} for k in "abc"]
+        result = self.solver.resolve("4/4", bare)
+        self.assertEqual(result["valid_assignments"], 3)
+        for support in result["event_support"]:
+            self.assertEqual(support["solution_counts"], [2, 1])
+            self.assertFalse(support["determined"])
+        # First and last known as quarters: the middle one is implied.
+        known = [{"id": "a", "candidates": [{"duration": "1/4"}]}, bare[1], {"id": "c", "candidates": [{"duration": "1/4"}]}]
+        result = self.solver.resolve("4/4", known)
+        self.assertEqual(result["status"], "resolved_unique")
+        self.assertTrue(all(s["determined"] for s in result["event_support"]))
+        self.assertEqual(result["event_support"][1]["supported_candidates"], ["1/2"])
 
     def test_dense_ambiguous_measure_is_solved_exactly_within_default_budget(self) -> None:
         # 3^24 raw combinations; enumeration used to exhaust the node budget.

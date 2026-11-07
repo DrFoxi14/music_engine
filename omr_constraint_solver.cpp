@@ -130,7 +130,7 @@ double parseConfidence(const std::string& text) {
     return value;
 }
 
-InputEvent parseEvent(const std::string& token, uint64_t ticksPerWhole) {
+InputEvent parseEvent(const std::string& token) {
     const size_t equals = token.find('=');
     if (equals == std::string::npos || equals == 0 || equals + 1 >= token.size())
         throw std::invalid_argument("event must look like id=1/2:0.9|1/4:0.7");
@@ -148,14 +148,8 @@ InputEvent parseEvent(const std::string& token, uint64_t ticksPerWhole) {
         const double confidence =
             colon == std::string::npos ? 1.0 : parseConfidence(rawCandidate.substr(colon + 1));
 
-        if (ticksPerWhole % duration.d != 0)
-            throw std::invalid_argument("duration is not representable at selected resolution (power-of-two note values up to max denominator, tuplet slots with up to 12 notes): " + duration.str());
-
-        if (duration.n > UINT64_MAX / (ticksPerWhole / duration.d))
-            throw std::invalid_argument("duration is too large");
-
-        const uint64_t ticks = duration.n * (ticksPerWhole / duration.d);
-        event.candidates.push_back(Candidate{duration, ticks, confidence});
+        // Ticks are assigned once the request's exact grid is known.
+        event.candidates.push_back(Candidate{duration, 0, confidence});
     }
 
     if (event.candidates.empty()) throw std::invalid_argument("event must have at least one candidate");
@@ -191,13 +185,32 @@ std::vector<std::string> suggestedChecks(const std::vector<Rational>& durations)
     return checks;
 }
 
-// Ticks per whole note: lcm(1..12) * max_note_denominator. This is the same
-// exact grid as Search Engine, so tuplet slot durations with actual counts up
-// to 12 (e.g. 1/20 for a sixteenth-note quintuplet slot) are representable.
+// Base ticks per whole note: lcm(1..12) * max_note_denominator, the same grid
+// as Search Engine. Each request extends it with the lcm of every candidate
+// denominator, so any exact rational duration is representable: a 13-tuplet,
+// or nested tuplets such as 9 inside 9 (slot 1/81 of the unit).
 constexpr uint64_t kTupletGridFactor = 27720;
+// Keeps measure * 16 * 2048 events inside uint64 for the DP sums.
+constexpr uint64_t kMaxTargetTicks = uint64_t(1) << 47;
 
 uint64_t ticksPerWholeFor(int maxDenominator) {
     return kTupletGridFactor * static_cast<uint64_t>(maxDenominator);
+}
+
+uint64_t checkedLcm(uint64_t a, uint64_t b) {
+    const uint64_t g = std::gcd(a, b);
+    const uint64_t step = b / g;
+    if (a > kMaxTargetTicks / step)
+        throw std::invalid_argument("durations are too fine to share one exact grid (lcm of denominators too large)");
+    return a * step;
+}
+
+uint64_t saturatingMul(uint64_t a, uint64_t b, bool& saturated) {
+    if (a != 0 && b > UINT64_MAX / a) {
+        saturated = true;
+        return UINT64_MAX;
+    }
+    return a * b;
 }
 
 uint64_t saturatingAdd(uint64_t a, uint64_t b, bool& saturated) {
@@ -214,7 +227,7 @@ public:
            SearchConfig config, std::vector<InputEvent> events)
         : numerator_(numerator), denominator_(denominator),
           maxDenominator_(maxDenominator), config_(config), events_(std::move(events)),
-          ticksPerWhole_(ticksPerWholeFor(maxDenominator_)) {
+          ticksPerWhole_(0) {
         if (numerator_ <= 0 || numerator_ > 10000) throw std::invalid_argument("meter numerator must be 1..10000");
         if (!isPowerOfTwo(static_cast<uint64_t>(denominator_)) ||
             static_cast<uint64_t>(denominator_) > static_cast<uint64_t>(maxDenominator_))
@@ -224,6 +237,20 @@ public:
             throw std::invalid_argument("max denominator must be a power of two from 2 to 256");
         if (events_.empty()) throw std::invalid_argument("at least one event is required");
         if (events_.size() > 2048) throw std::invalid_argument("at most 2048 ordered events are supported");
+
+        ticksPerWhole_ = ticksPerWholeFor(maxDenominator_);
+        for (const auto& event : events_)
+            for (const auto& candidate : event.candidates) ticksPerWhole_ = checkedLcm(ticksPerWhole_, candidate.duration.d);
+        if (static_cast<uint64_t>(numerator_) > kMaxTargetTicks / ticksPerWhole_)
+            throw std::invalid_argument("measure is too long for this grid");
+        for (auto& event : events_) {
+            for (auto& candidate : event.candidates) {
+                const uint64_t per = ticksPerWhole_ / candidate.duration.d;
+                if (candidate.duration.n > kMaxTargetTicks / per)
+                    throw std::invalid_argument("duration is too large: " + candidate.duration.str());
+                candidate.ticks = candidate.duration.n * per;
+            }
+        }
 
         const uint64_t scaled = static_cast<uint64_t>(numerator_) * ticksPerWhole_;
         if (scaled % static_cast<uint64_t>(denominator_) != 0)
@@ -253,8 +280,10 @@ public:
         }
 
         support_.resize(events_.size());
+        candidateCounts_.resize(events_.size());
         for (size_t i = 0; i < events_.size(); ++i) {
             support_[i].assign(events_[i].candidates.size(), false);
+            candidateCounts_[i].assign(events_[i].candidates.size(), 0);
         }
     }
 
@@ -313,7 +342,12 @@ public:
                     out << '"' << events_[i].candidates[c].duration.str() << '"';
                 }
             }
-            out << "],\"support_is_complete\":" << (truncated_ ? "false" : "true");
+            out << "],\"solution_counts\":[";
+            for (size_t c = 0; c < candidateCounts_[i].size(); ++c) out << (c ? "," : "") << candidateCounts_[i][c];
+            size_t supportedCount = 0;
+            for (bool b : support_[i]) supportedCount += b;
+            out << "],\"determined\":" << (!truncated_ && supportedCount == 1 ? "true" : "false");
+            out << ",\"support_is_complete\":" << (truncated_ ? "false" : "true");
             out << ",\"suggested_visual_checks\":[";
             std::vector<Rational> inputDurations;
             for (const auto& candidate : events_[i].candidates) inputDurations.push_back(candidate.duration);
@@ -351,6 +385,7 @@ private:
     std::vector<uint64_t> suffixMin_;
     std::vector<uint64_t> suffixMax_;
     std::vector<std::vector<bool>> support_;
+    std::vector<std::vector<uint64_t>> candidateCounts_;
     std::vector<Solution> solutions_;
     uint64_t nodesVisited_ = 0;
     uint64_t validCount_ = 0;
@@ -402,6 +437,10 @@ private:
                     // A candidate is supported iff some valid full assignment uses it.
                     support_[i][c] = true;
                     completions = saturatingAdd(completions, next->second, countSaturated_);
+                    // Exact number of valid assignments that use this candidate.
+                    candidateCounts_[i][c] = saturatingAdd(
+                        candidateCounts_[i][c],
+                        saturatingMul(entry.second, next->second, countSaturated_), countSaturated_);
                 }
                 if (completions) backward[i][elapsed] = completions;
             }
@@ -543,7 +582,7 @@ int main(int argc, char** argv) {
                     } else {
                         if (maxDenominator < 2 || maxDenominator > 256 || !isPowerOfTwo(static_cast<uint64_t>(maxDenominator)))
                             throw std::invalid_argument("max denominator must be a power of two from 2 to 256");
-                        events.push_back(parseEvent(token, ticksPerWholeFor(maxDenominator)));
+                        events.push_back(parseEvent(token));
                     }
                 }
 

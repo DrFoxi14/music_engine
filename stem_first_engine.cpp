@@ -40,7 +40,7 @@
  *   clang++ -std=c++17 -O3 -DNDEBUG stem_first_engine.cpp -o stem_first_engine
  *
  * Protocol, one request per line (image coordinates, y grows downwards):
- *   ANALYZE spacing=10 [meter=4/4] \
+ *   ANALYZE spacing=10 [meter=4/4] [unchecked=fill,dots] [unchecked_max_dots=1] \
  *     stem=id,x1,y1,x2,y2 \
  *     notehead=id,left,top,right,bottom,fill,fill_confidence \
  *     flag=id,left,top,right,bottom,count \
@@ -55,6 +55,12 @@
  *   value     = rest base value: 1, 2, 4, 8, ... B (breve), or 'measure'
  *   label     = "3" (normal inferred) or "5:6" (explicit a:n)
  *   members   = stem, rest or notehead ids enclosed by the tuplet bracket
+ *   unchecked = visual features the Visual Engine has NOT inspected yet.
+ *               fill: every head is treated as unknown (half or quarter in
+ *               the flag/beam-free branch); dots: every note may carry
+ *               0..unchecked_max_dots dots. The measure constraint then
+ *               decides, and only real ambiguity becomes a visual question.
+ *               Each candidate reports the fill and dot count it implies.
  */
 namespace {
 
@@ -228,6 +234,9 @@ struct Tuplet { std::string id; int actual = 3; int normal = 0; std::vector<std:
 
 struct Request {
     double spacing = 0;
+    bool fillUnchecked = false;
+    bool dotsUnchecked = false;
+    int uncheckedMaxDots = 1;
     int meterNum = 0, meterDen = 0;
     std::vector<Stem> stems;
     std::vector<Notehead> noteheads;
@@ -272,6 +281,16 @@ Request parseRequest(std::istringstream& input) {
             r.meterNum = parseInt(p[0], "meter numerator");
             r.meterDen = parseInt(p[1], "meter denominator");
             if (r.meterNum <= 0 || r.meterDen <= 0) throw std::invalid_argument("meter must be positive");
+        } else if (key == "unchecked") {
+            for (const auto& item : split(value, ',')) {
+                if (item == "fill") r.fillUnchecked = true;
+                else if (item == "dots") r.dotsUnchecked = true;
+                else if (!item.empty()) throw std::invalid_argument("unchecked accepts fill and dots");
+            }
+        } else if (key == "unchecked_max_dots") {
+            r.uncheckedMaxDots = parseInt(value, "unchecked_max_dots");
+            if (r.uncheckedMaxDots < 0 || r.uncheckedMaxDots > 3)
+                throw std::invalid_argument("unchecked_max_dots must be 0..3");
         } else if (key == "stem") {
             auto f = fields(value, 5, "stem");
             Stem s{unique(f[0], "stem"), {parseDouble(f[1], "stem x1"), parseDouble(f[2], "stem y1")},
@@ -332,6 +351,8 @@ struct Candidate {
     Fraction duration;
     double confidence = 1;
     std::string reading;
+    std::string fill = "any"; // head fill this reading implies: filled | hollow | any | rest
+    int dots = 0;             // augmentation dots this reading implies
 };
 
 struct StemResult {
@@ -423,7 +444,7 @@ private:
     // Tolerances, all relative to staff spacing; never to stem length.
     double endTolerance() const { return 0.75 * s_; }
     double touchTolerance() const { return 0.35 * s_; }
-    double beamReach() const { return 3.5 * s_; }
+    double beamReach() const { return 6.0 * s_; }   // room for 8 stacked beams
 
     Point end(const Stem& stem, int which) const { return which == 0 ? stem.a : stem.b; }
 
@@ -545,10 +566,11 @@ private:
 
     std::vector<Candidate> fillCandidates(const Notehead& head) const {
         // Flag/beam-free branch: only here does the notehead fill matter.
-        const Candidate quarter{Fraction::make(1, 4), 1, "quarter (stem, no flag/beam, filled head)"};
-        const Candidate half{Fraction::make(1, 2), 1, "half (stem, no flag/beam, hollow head)"};
-        if (head.fill == "unknown") {
-            return {Candidate{quarter.duration, 0.5, quarter.reading}, Candidate{half.duration, 0.5, half.reading}};
+        const Candidate quarter{Fraction::make(1, 4), 1, "quarter (stem, no flag/beam, filled head)", "filled", 0};
+        const Candidate half{Fraction::make(1, 2), 1, "half (stem, no flag/beam, hollow head)", "hollow", 0};
+        if (head.fill == "unknown" || r_.fillUnchecked) {
+            return {Candidate{quarter.duration, 0.5, quarter.reading, "filled", 0},
+                    Candidate{half.duration, 0.5, half.reading, "hollow", 0}};
         }
         const bool filled = head.fill == "filled";
         Candidate primary = filled ? quarter : half;
@@ -626,18 +648,17 @@ private:
             e.heads = group;
             e.kind = group.size() > 1 ? "chord" : "note";
             e.x = head.box.center().x;
-            if (head.fill == "hollow") {
-                e.basis = "stemless hollow head";
-                e.candidates.push_back({Fraction::make(1, 1), head.fillConfidence, "whole (stemless hollow head)"});
-                if (head.fillConfidence < 1)
-                    e.candidates.push_back({Fraction::make(1, 4), 1 - head.fillConfidence, "quarter (head fill uncertain, stem missing)"});
+            if (head.fill == "hollow" || head.fill == "unknown" || r_.fillUnchecked) {
+                // A stem was searched for and not found: the stemless value.
+                e.basis = "stemless head";
+                e.candidates.push_back({Fraction::make(1, 1), 1, "whole (stemless head)", "hollow", 0});
             } else {
                 // A filled head needs a stem; list every filled-head reading
                 // and let the measure constraint and a visual recheck decide.
                 e.confirmed = false;
                 e.basis = "filled head without detected stem";
                 for (int den = 4; den <= 32; den *= 2)
-                    e.candidates.push_back({Fraction::make(1, den), 0.25, noteName(den) + " (stem not detected)"});
+                    e.candidates.push_back({Fraction::make(1, den), 0.25, noteName(den) + " (stem not detected)", "filled", 0});
                 guidance_.push_back({head.id, "filled_notehead_without_stem", {"stem_detection", "flag_or_beam_detection"}});
             }
             events_.push_back(e);
@@ -669,7 +690,7 @@ private:
             }
             e.basis = "rest recognizer";
             e.dots = rest.dots;
-            e.candidates.push_back({base, 1, name});
+            e.candidates.push_back({base, 1, name, "rest", 0});
             events_.push_back(e);
         }
     }
@@ -677,7 +698,7 @@ private:
     // Dots: to the right of a head of the event, at the head's height
     // (raised by half a space when the head sits on a line).
     void collectDots(Event& e) {
-        if (e.source == "rest") return;
+        if (e.source == "rest" || r_.dotsUnchecked) return;
         int best = 0;
         double conf = 1;
         for (size_t h : e.heads) {
@@ -721,14 +742,36 @@ private:
             for (size_t h : e.heads) add(r_.noteheads[h].id);
 
             std::vector<Candidate> out = e.candidates;
-            if (e.dots > 0) {
-                const Fraction factor = Fraction::make((int64_t(2) << e.dots) - 1, int64_t(1) << e.dots);
+            auto withDots = [](Candidate c, int dots, double confidence) {
+                const Fraction factor = Fraction::make((int64_t(2) << dots) - 1, int64_t(1) << dots);
+                c.duration = c.duration * factor;
+                c.confidence *= confidence;
+                c.dots = dots;
+                c.reading += " + " + std::to_string(dots) + " dot" + (dots > 1 ? "s" : "");
+                return c;
+            };
+            if (r_.dotsUnchecked && e.source != "rest") {
+                // Dots not inspected: every dot count up to the limit stays possible.
+                std::vector<Candidate> expanded;
+                for (const auto& c : out) {
+                    Candidate plain = c;
+                    plain.confidence *= 0.7;
+                    plain.reading += " (dots unchecked)";
+                    expanded.push_back(plain);
+                    for (int k = 1; k <= r_.uncheckedMaxDots; ++k)
+                        expanded.push_back(withDots(c, k, 0.3 / r_.uncheckedMaxDots));
+                }
+                out = expanded;
+            } else if (e.dots > 0) {
                 std::vector<Candidate> dotted;
                 for (const auto& c : out) {
-                    dotted.push_back({c.duration * factor, c.confidence * e.dotConfidence,
-                                      c.reading + " + " + std::to_string(e.dots) + " dot" + (e.dots > 1 ? "s" : "")});
-                    if (e.dotConfidence < 1)
-                        dotted.push_back({c.duration, c.confidence * (1 - e.dotConfidence), c.reading + " (dot rejected)"});
+                    dotted.push_back(withDots(c, e.dots, e.dotConfidence));
+                    if (e.dotConfidence < 1) {
+                        Candidate plain = c;
+                        plain.confidence *= 1 - e.dotConfidence;
+                        plain.reading += " (dot rejected)";
+                        dotted.push_back(plain);
+                    }
                 }
                 out = dotted;
             }
@@ -739,8 +782,11 @@ private:
                 for (const auto& c : out) {
                     for (int n : normals) {
                         const double share = 1.0 / static_cast<double>(normals.size());
-                        scaled.push_back({c.duration * Fraction::make(n, t->actual), c.confidence * share,
-                                          c.reading + " in " + std::to_string(t->actual) + ":" + std::to_string(n)});
+                        Candidate scaledCandidate = c;
+                        scaledCandidate.duration = c.duration * Fraction::make(n, t->actual);
+                        scaledCandidate.confidence = c.confidence * share;
+                        scaledCandidate.reading += " in " + std::to_string(t->actual) + ":" + std::to_string(n);
+                        scaled.push_back(scaledCandidate);
                     }
                 }
                 out = scaled;
@@ -785,7 +831,9 @@ private:
         std::ostringstream out;
         out << std::setprecision(6);
         const bool review = !guidance_.empty();
-        out << "{\"type\":\"stem_analysis\",\"status\":\"" << (review ? "review_required" : "resolved") << "\",\"stems\":[";
+        out << "{\"type\":\"stem_analysis\",\"status\":\"" << (review ? "review_required" : "resolved")
+            << "\",\"unchecked\":{\"fill\":" << (r_.fillUnchecked ? "true" : "false")
+            << ",\"dots\":" << (r_.dotsUnchecked ? "true" : "false") << "},\"stems\":[";
         for (size_t i = 0; i < stems_.size(); ++i) {
             const auto& st = stems_[i];
             const char* names[2] = {"A", "B"};
@@ -818,7 +866,8 @@ private:
             for (size_t c = 0; c < e.candidates.size(); ++c) {
                 out << (c ? "," : "") << "{\"duration\":\"" << e.candidates[c].duration.str()
                     << "\",\"confidence\":" << e.candidates[c].confidence
-                    << ",\"reading\":\"" << jsonEscape(e.candidates[c].reading) << "\"}";
+                    << ",\"reading\":\"" << jsonEscape(e.candidates[c].reading)
+                    << "\",\"fill\":\"" << e.candidates[c].fill << "\",\"dots\":" << e.candidates[c].dots << '}';
             }
             out << "]}";
         }

@@ -304,6 +304,40 @@ with StemFirstClient("./stem_first_engine") as stem, OMRConstraintClient("./omr_
     # PitchContextClient(...).resolve(..., notes=notes, stems=stems)
 ```
 
+### Optimal inference: ask Vision only what the bar does not imply
+
+`infer_measure()` reads a measure from structure alone and asks the Visual Engine only real ambiguities:
+
+1. The Visual Engine reports cheap structure: stems, flags, beams, notehead positions, rests and tuplet brackets. Head fill and augmentation dots are left unchecked (`unchecked=fill,dots`), so a bare stem may be a quarter, a half, or either one dotted.
+2. The solver keeps every reading that fills the bar exactly. Events with one surviving duration are `implied`, and nobody looks at them.
+3. While several readings remain, one check is asked: the head fill or the dot count of one event. With at most 100 readings the order is exactly optimal (minimax over all readings); above that the check with the smallest worst case is chosen. If the Visual Engine reports more dots than assumed, the range widens automatically.
+4. Pitch follows, from the notehead positions (`pitch_inputs` → `pitch_context_engine`).
+
+```python
+# Three bare stems in 4/4. Vision: "first and last are quarters".
+result = infer_measure(stem, solver, meter="4/4", spacing=10, stems=stems, noteheads=heads,
+                       known={"s0": {"duration": "1/4"}, "s2": {"duration": "1/4"}},
+                       answer=ask_vision)       # never called here
+result["durations"]   # {"s0": "1/4", "s1": "1/2", "s2": "1/4"}  - the half is implied
+result["questions"]   # []
+```
+
+Without the hint the same bar has 6 readings ((¼ ¼ ½) and (¼ ⅜ ⅜) in any order). It needs 3 checks in the worst case, which is the minimum, because 2 two-way checks separate at most 4 readings.
+
+The solver accepts any exact rational duration: its grid is the lcm of every candidate denominator, so a 13-tuplet or a 9-tuplet inside a 9-tuplet are exact. Each event also reports `solution_counts` (how many valid readings use each candidate) and `determined`.
+
+### End-to-end testing over the rhythm space
+
+`tests/score_renderer.py` draws any rhythm of the complete space as Visual Engine primitives. It uses varied pitches and stem directions, flags or beams with partial beams, dots, rests, nested tuplet brackets and occasional chords. `tests/pipeline_sweep.py` then reads every bar back twice:
+
+- with full evidence, STEM-first + solver must return exactly the true durations;
+- with fill and dots unchecked, the truth must stay possible, implied events must be correct, and the question loop must reach the truth without asking about implied events or repeating a check.
+
+```bash
+python3 tests/pipeline_sweep.py build 2/4 16 "longest=1 max_dots=1 depth=0" all   # every bar
+python3 tests/pipeline_sweep.py build 4/4 32 "" sample 300                        # uniform sample
+```
+
 Input elements: `stem {id,x1,y1,x2,y2}`, `notehead {id,bbox,fill,fill_confidence}`, `flag {id,bbox,count}`, `beam {id,x1,y1,x2,y2,thickness}`, `dot {id,x,y,confidence}`, `rest {id,bbox,value,dots}` with `value` a power of two, `"B"` or `"measure"`, and `tuplet {id,number,normal,members}`. Each request is one voice of one measure.
 
 

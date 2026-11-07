@@ -73,6 +73,8 @@ class StemFirstClient:
         rests: Iterable[Mapping[str, Any]] = (),
         tuplets: Iterable[Mapping[str, Any]] = (),
         meter: str | None = None,
+        unchecked: Iterable[str] = (),
+        unchecked_max_dots: int = 1,
     ) -> dict[str, Any]:
         """Analyze one voice of one measure.
 
@@ -83,11 +85,20 @@ class StemFirstClient:
         dot:      {"id", "x", "y", "confidence"}
         rest:     {"id", "bbox", "value": 4 | "B" | "measure", "dots"}
         tuplet:   {"id", "number": 3, "normal": None, "members": [ids]}
+
+        unchecked: visual features not inspected yet ("fill", "dots"); the
+        engine then lists every value they could take.
         """
         tokens = ["ANALYZE", f"spacing={_num(spacing, 'spacing')}"]
         if meter is not None:
             num, den = (int(p) for p in str(meter).split("/"))
             tokens.append(f"meter={num}/{den}")
+        unchecked = [str(u) for u in unchecked]
+        if unchecked:
+            if any(u not in {"fill", "dots"} for u in unchecked):
+                raise ValueError("unchecked accepts 'fill' and 'dots'")
+            tokens.append("unchecked=" + ",".join(unchecked))
+            tokens.append(f"unchecked_max_dots={int(unchecked_max_dots)}")
         for s in stems:
             tokens.append("stem=" + ",".join([_id(s["id"], "stem id"), _num(s["x1"], "x1"), _num(s["y1"], "y1"),
                                                _num(s["x2"], "x2"), _num(s["y2"], "y2")]))
@@ -238,3 +249,167 @@ def read_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: str
             "duration": item["supported_candidates"][0] if len(item["supported_candidates"]) == 1 else None,
         })
     return {"analysis": analysis, "rhythm": rhythm, "events": combined}
+
+
+# ---------------------------------------------------------------------------
+# Optimal inference: deduce everything the bar implies, ask only the rest.
+# ---------------------------------------------------------------------------
+
+FEATURES = ("fill", "dots")
+EXACT_PLAN_LIMIT = 100  # solver's maximum solution page
+
+
+def _feature_map(analysis: Mapping[str, Any]) -> dict[str, dict[str, dict[str, Any]]]:
+    """event id -> duration -> candidate (with the fill/dots it implies)."""
+    return {e["id"]: {c["duration"]: c for c in e["candidates"]} for e in analysis["events"]}
+
+
+def _restrict(analysis: Mapping[str, Any], known: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Solver events with candidates filtered by what the Visual Engine confirmed."""
+    events = solver_events(analysis)
+    features = _feature_map(analysis)
+    for event in events:
+        facts = known.get(event["id"], {})
+        if not facts:
+            continue
+        keep = []
+        for cand in event["candidates"]:
+            info = features[event["id"]][cand["duration"]]
+            if "duration" in facts and cand["duration"] != facts["duration"]:
+                continue
+            if any(f in facts and info[f] not in ("any", facts[f]) for f in FEATURES):
+                continue
+            keep.append(cand)
+        if not keep:
+            raise ValueError(f"visual answer for {event['id']} contradicts every candidate")
+        event["candidates"] = keep
+    return events
+
+
+def plan_checks(analysis: Mapping[str, Any], rhythm: Mapping[str, Any]) -> dict[str, Any]:
+    """Which events the bar already implies, and which visual check helps most.
+
+    Each check asks one feature (head fill, or dot count) of one event. Its
+    worst case is the largest number of valid readings that could remain.
+    """
+    features = _feature_map(analysis)
+    total = int(rhythm["valid_assignments"])
+    implied, checks = [], []
+    for support in rhythm["event_support"]:
+        event_id = support["event_id"]
+        if support["determined"]:
+            implied.append(event_id)
+            continue
+        counts = {d: int(n) for d, n in zip(support["input_candidates"], support["solution_counts"]) if int(n) > 0}
+        for feature in FEATURES:
+            groups: dict[Any, int] = {}
+            for duration, n in counts.items():
+                value = features[event_id][duration][feature]
+                if value == "any":
+                    groups = {}
+                    break
+                groups[value] = groups.get(value, 0) + n
+            if len(groups) < 2:
+                continue  # the answer is already known or does not separate readings
+            checks.append({
+                "event_id": event_id,
+                "feature": feature,
+                "worst_case_remaining": max(groups.values()),
+                "expected_remaining": sum(n * n for n in groups.values()) / total,
+                "outcomes": groups,
+            })
+    checks.sort(key=lambda c: (c["worst_case_remaining"], c["expected_remaining"]))
+    return {"implied": implied, "checks": checks, "next": checks[0] if checks else None}
+
+
+def optimal_question_count(solutions: Sequence[Sequence[str]], event_ids: Sequence[str],
+                           features: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> tuple[int, tuple[str, str] | None]:
+    """Exact minimax: fewest checks that always identify the reading, and the first check."""
+    solutions = [tuple(s) for s in solutions]
+    memo: dict[frozenset[int], tuple[int, tuple[str, str] | None]] = {}
+
+    def solve(subset: frozenset[int]) -> tuple[int, tuple[str, str] | None]:
+        if len(subset) <= 1:
+            return 0, None
+        if subset in memo:
+            return memo[subset]
+        best: tuple[int, tuple[str, str] | None] = (len(subset), None)
+        for i, event_id in enumerate(event_ids):
+            for feature in FEATURES:
+                parts: dict[Any, set[int]] = {}
+                for s in subset:
+                    value = features[event_id][solutions[s][i]][feature]
+                    parts.setdefault(value, set()).add(s)
+                if len(parts) < 2 or "any" in parts:
+                    continue
+                cost = 1 + max(solve(frozenset(p))[0] for p in parts.values())
+                if cost < best[0]:
+                    best = (cost, (event_id, feature))
+        memo[subset] = best
+        return best
+
+    return solve(frozenset(range(len(solutions))))
+
+
+def infer_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: str, spacing: float,
+                  answer: Any = None, known: Mapping[str, Mapping[str, Any]] | None = None,
+                  unchecked: Iterable[str] = ("fill", "dots"), unchecked_max_dots: int = 1,
+                  max_note_denominator: int = 256, **elements: Any) -> dict[str, Any]:
+    """Read one voice of one measure asking the Visual Engine as little as possible.
+
+    1. STEM-first analysis from structure only (fill and dots unchecked).
+    2. The measure constraint fixes every event it can ("implied").
+    3. While readings remain, ask the single most informative check:
+       answer(event_id, feature) -> value ("filled"/"hollow" or a dot count).
+       With <= 100 readings the question order is exactly optimal (minimax).
+    `known` holds facts the Visual Engine volunteers up front, per event:
+    {"fill": ..., "dots": ..., "duration": ...}.
+    """
+    unchecked = tuple(unchecked)
+    analysis = stem_client.analyze(spacing, meter=meter, unchecked=unchecked,
+                                   unchecked_max_dots=unchecked_max_dots, **elements)
+    facts: dict[str, dict[str, Any]] = {k: dict(v) for k, v in (known or {}).items()}
+    features = _feature_map(analysis)
+    questions: list[dict[str, Any]] = []
+    first_implied: list[str] | None = None
+    while True:
+        events = _restrict(analysis, facts)
+        rhythm = solver_client.resolve(meter, events, max_note_denominator=max_note_denominator,
+                                       limit=EXACT_PLAN_LIMIT, max_nodes=10_000_000)
+        plan = plan_checks(analysis, rhythm)
+        if first_implied is None:
+            first_implied = plan["implied"]
+        if rhythm["status"] != "ambiguous" or answer is None:
+            break
+        chosen = plan["next"]
+        if chosen is None:
+            break  # remaining readings differ in nothing the Visual Engine can check
+        pick = (chosen["event_id"], chosen["feature"])
+        if int(rhythm["valid_assignments"]) <= EXACT_PLAN_LIMIT:
+            ids = [e["id"] for e in events]
+            sols = [[ev["duration_whole"] for ev in s["events"]] for s in rhythm["solutions"]]
+            _, exact = optimal_question_count(sols, ids, features)
+            if exact is not None:
+                pick = exact
+        value = answer(*pick)
+        questions.append({"event_id": pick[0], "feature": pick[1], "answer": value,
+                          "readings_before": int(rhythm["valid_assignments"])})
+        facts.setdefault(pick[0], {})[pick[1]] = value
+        if pick[1] == "dots" and "dots" in unchecked and int(value) > unchecked_max_dots:
+            # More dots than assumed: widen the unchecked range instead of failing.
+            unchecked_max_dots = int(value)
+            analysis = stem_client.analyze(spacing, meter=meter, unchecked=unchecked,
+                                           unchecked_max_dots=unchecked_max_dots, **elements)
+            features = _feature_map(analysis)
+
+    durations = None
+    if rhythm["status"] == "resolved_unique":
+        durations = {e["event_id"]: e["duration_whole"] for e in rhythm["solutions"][0]["events"]}
+    return {
+        "analysis": analysis,
+        "rhythm": rhythm,
+        "status": rhythm["status"],
+        "durations": durations,
+        "implied_without_questions": first_implied or [],
+        "questions": questions,
+    }
