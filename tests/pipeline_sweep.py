@@ -93,13 +93,14 @@ class Sweep:
         if len(asked) > len(set(asked)):
             self.failures.append(f"asked the same check twice: {notation} {asked}")
         readings = result["questions"][0]["readings_before"] if result["questions"] else 1
+        readings_log2 = result["questions"][0]["readings_before_log2"] if result["questions"] else 0.0
         if result["questions"] and readings <= 100 and len(asked) > len(ids) * 2:
             self.failures.append(f"too many questions: {notation} {asked}")
         self.question_hist[len(asked)] += 1
         self.stats["events"] += len(ids)
         self.stats["implied_events"] += len(implied)
         self.stats["questions"] += len(asked)
-        self.stats["lower_bound"] += math.ceil(math.log2(readings)) if readings > 1 else 0
+        self.stats["lower_bound"] += math.ceil(readings_log2 - 1e-9) if readings_log2 and readings_log2 > 0 else 0
 
     def summary(self) -> str:
         n = self.stats["patterns"]

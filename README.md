@@ -326,7 +326,7 @@ Without the hint the same bar has 6 readings ((¼ ¼ ½) and (¼ ⅜ ⅜) in any
 
 Deductions are exact relative to the unchecked range. `unchecked_max_dots` defaults to 2: with 1, a double-dotted half plus a quarter in 9/8 would be "deduced" as a dotted half plus a dotted quarter. If the Visual Engine reports more dots than assumed, the range widens automatically.
 
-The solver accepts any exact rational duration: its grid is the lcm of every candidate denominator, so a 13-tuplet or a 9-tuplet inside a 9-tuplet are exact. Each event also reports `solution_counts` (how many valid readings use each candidate) and `determined`.
+The solver accepts any exact rational duration: its grid is the lcm of every candidate denominator, so a 13-tuplet or a 9-tuplet inside a 9-tuplet are exact. Each event also reports `solution_counts` (how many valid readings use each candidate) and `determined`. Exact counts are 64-bit; `valid_assignments_log2` and `solution_counts_log2` carry the same counts as log2 and never saturate (a 2/2 bar of 524 events at 1/256 has about 2^309 readings). DP states are stored in compact sorted layers, and the ranked solution list has a memory budget: when it binds, fewer than `limit` solutions are returned and `solutions_limited_by_memory` is true.
 
 ### End-to-end testing over the rhythm space
 

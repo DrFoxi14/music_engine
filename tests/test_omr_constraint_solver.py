@@ -152,6 +152,16 @@ class OMRConstraintSolverTests(unittest.TestCase):
         self.assertEqual(result["status"], "resolved_unique")
         self.assertEqual(result["event_support"][-1]["eliminated_candidates"], ["1/64"])
 
+    def test_counts_beyond_64_bits_are_exact_in_log2(self) -> None:
+        # 120 events of 1/128 or 1/256 filling 3/4: exactly C(120, 72) readings.
+        events = [{"id": f"e{i}", "candidates": [{"duration": "1/128"}, {"duration": "1/256"}]} for i in range(120)]
+        result = self.solver.resolve("3/4", events)
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertTrue(result["valid_assignments_is_lower_bound"])
+        self.assertAlmostEqual(result["valid_assignments_log2"], math.log2(math.comb(120, 72)), places=4)
+        share = 2 ** (result["event_support"][0]["solution_counts_log2"][0] - result["valid_assignments_log2"])
+        self.assertAlmostEqual(share, 72 / 120, places=6)
+
     def test_grid_overflow_is_rejected(self) -> None:
         events = [{"id": f"p{i}", "candidates": [{"duration": f"1/{p}"}]}
                   for i, p in enumerate((999983, 999979, 999961))]

@@ -293,6 +293,10 @@ def plan_checks(analysis: Mapping[str, Any], rhythm: Mapping[str, Any]) -> dict[
     worst case is the largest number of valid readings that could remain.
     """
     features = _feature_map(analysis)
+    # Exact counts while they fit in 64 bits; beyond that the solver's log2
+    # counts (which never saturate) give the shares of each outcome.
+    saturated = bool(rhythm.get("valid_assignments_is_lower_bound"))
+    total_log2 = rhythm.get("valid_assignments_log2") or 0.0
     total = int(rhythm["valid_assignments"])
     implied, checks = [], []
     for support in rhythm["event_support"]:
@@ -300,25 +304,33 @@ def plan_checks(analysis: Mapping[str, Any], rhythm: Mapping[str, Any]) -> dict[
         if support["determined"]:
             implied.append(event_id)
             continue
-        counts = {d: int(n) for d, n in zip(support["input_candidates"], support["solution_counts"]) if int(n) > 0}
+        if saturated:
+            logs = support["solution_counts_log2"]
+            shares = {d: 2.0 ** (lg - total_log2) for d, lg in zip(support["input_candidates"], logs) if lg is not None}
+        else:
+            shares = {d: int(n) / total for d, n in zip(support["input_candidates"], support["solution_counts"])
+                      if int(n) > 0}
         for feature in FEATURES:
-            groups: dict[Any, int] = {}
-            for duration, n in counts.items():
+            groups: dict[Any, float] = {}
+            for duration, share in shares.items():
                 value = features[event_id][duration][feature]
                 if value == "any":
                     groups = {}
                     break
-                groups[value] = groups.get(value, 0) + n
+                groups[value] = groups.get(value, 0.0) + share
             if len(groups) < 2:
                 continue  # the answer is already known or does not separate readings
+            worst = max(groups.values())
             checks.append({
                 "event_id": event_id,
                 "feature": feature,
-                "worst_case_remaining": max(groups.values()),
-                "expected_remaining": sum(n * n for n in groups.values()) / total,
+                "worst_case_share": worst,
+                "worst_case_remaining": round(worst * total) if not saturated else None,
+                "worst_case_remaining_log2": total_log2 + math.log2(worst),
+                "expected_share": sum(g * g for g in groups.values()),
                 "outcomes": groups,
             })
-    checks.sort(key=lambda c: (c["worst_case_remaining"], c["expected_remaining"]))
+    checks.sort(key=lambda c: (round(c["worst_case_share"], 12), round(c["expected_share"], 12)))
     return {"implied": implied, "checks": checks, "next": checks[0] if checks else None}
 
 
@@ -461,7 +473,8 @@ def infer_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: st
                 pick = exact
         value = answer(*pick)
         questions.append({"event_id": pick[0], "feature": pick[1], "answer": value,
-                          "readings_before": int(rhythm["valid_assignments"])})
+                          "readings_before": int(rhythm["valid_assignments"]),
+                          "readings_before_log2": rhythm.get("valid_assignments_log2")})
         facts.setdefault(pick[0], {})[pick[1]] = value
         if pick[1] == "dots" and "dots" in unchecked and int(value) > unchecked_max_dots:
             # More dots than assumed: widen the unchecked range instead of failing.

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <unordered_map>
 #include <numeric>
 #include <set>
@@ -284,6 +285,7 @@ public:
         for (size_t i = 0; i < events_.size(); ++i) {
             support_[i].assign(events_[i].candidates.size(), false);
             candidateCounts_[i].assign(events_[i].candidates.size(), 0);
+            candidateLog2_.push_back(std::vector<double>(events_[i].candidates.size(), kNoCount));
         }
     }
 
@@ -300,6 +302,8 @@ public:
             << "\",\"nodes_visited\":" << nodesVisited_
             << ",\"valid_assignments\":" << validCount_
             << ",\"valid_assignments_is_lower_bound\":" << (countSaturated_ ? "true" : "false")
+            << ",\"valid_assignments_log2\":" << (validLog2_ == kNoCount ? std::string("null") : std::to_string(validLog2_))
+            << ",\"solutions_limited_by_memory\":" << (solutionsLimitedByMemory_ ? "true" : "false")
             << ",\"truncated\":" << (truncated_ ? "true" : "false")
             << ",\"solutions\":[";
         for (size_t s = 0; s < solutions_.size(); ++s) {
@@ -346,6 +350,9 @@ public:
             for (size_t c = 0; c < candidateCounts_[i].size(); ++c) out << (c ? "," : "") << candidateCounts_[i][c];
             size_t supportedCount = 0;
             for (bool b : support_[i]) supportedCount += b;
+            out << "],\"solution_counts_log2\":[";
+            for (size_t c = 0; c < candidateLog2_[i].size(); ++c)
+                out << (c ? "," : "") << (candidateLog2_[i][c] == kNoCount ? std::string("null") : std::to_string(candidateLog2_[i][c]));
             out << "],\"determined\":" << (!truncated_ && supportedCount == 1 ? "true" : "false");
             out << ",\"support_is_complete\":" << (truncated_ ? "false" : "true");
             out << ",\"suggested_visual_checks\":[";
@@ -368,11 +375,45 @@ private:
     // in the next event's list.
     struct RankedEntry {
         double logScore = 0.0;
-        size_t candidate = 0;
-        size_t nextRank = 0;
+        uint32_t candidate = 0;
+        uint32_t nextRank = 0;
     };
 
-    using Layer = std::unordered_map<uint64_t, uint64_t>;
+    // Onset positions of one event index, ascending, with their counts.
+    // Sorted vectors keep a state at 24 bytes (hash maps cost ~3x more).
+    struct Layer {
+        std::vector<uint64_t> keys;
+        std::vector<uint64_t> counts;
+        std::vector<double> log2s;
+
+        long find(uint64_t key) const {
+            auto it = std::lower_bound(keys.begin(), keys.end(), key);
+            if (it == keys.end() || *it != key) return -1;
+            return static_cast<long>(it - keys.begin());
+        }
+        void push(uint64_t key, uint64_t count, double log2) {
+            keys.push_back(key);
+            counts.push_back(count);
+            log2s.push_back(log2);
+        }
+        size_t size() const { return keys.size(); }
+        void release() {
+            std::vector<uint64_t>().swap(keys);
+            std::vector<uint64_t>().swap(counts);
+            std::vector<double>().swap(log2s);
+        }
+    };
+
+    static constexpr double kNoCount = -std::numeric_limits<double>::infinity();
+    // Entries kept for ranked solutions across all states (16 bytes each).
+    static constexpr size_t kRankedEntryBudget = 4000000;
+
+    static double log2Add(double a, double b) {
+        if (a == kNoCount) return b;
+        if (b == kNoCount) return a;
+        const double hi = std::max(a, b), lo = std::min(a, b);
+        return hi + std::log2(1.0 + std::exp2(lo - hi));
+    }
 
     int numerator_;
     int denominator_;
@@ -386,6 +427,9 @@ private:
     std::vector<uint64_t> suffixMax_;
     std::vector<std::vector<bool>> support_;
     std::vector<std::vector<uint64_t>> candidateCounts_;
+    std::vector<std::vector<double>> candidateLog2_;   // log2 of the exact count; never saturates
+    double validLog2_ = -std::numeric_limits<double>::infinity();
+    bool solutionsLimitedByMemory_ = false;
     std::vector<Solution> solutions_;
     uint64_t nodesVisited_ = 0;
     uint64_t validCount_ = 0;
@@ -401,105 +445,144 @@ private:
     // Exact dynamic program over (event index, elapsed ticks). The number of
     // states is the number of distinct onset positions, not the number of
     // candidate combinations, so dense ambiguous measures are solved exactly.
-    // max_nodes bounds the number of states.
+    // max_nodes bounds the number of states. Counts are kept exactly in
+    // 64 bits (saturating) and as log2, which never saturates.
     void runDynamicProgram() {
         const size_t n = events_.size();
 
         // Forward: reachable onsets and how many prefixes reach them.
         std::vector<Layer> forward(n + 1);
-        forward[0][0] = 1;
+        forward[0].push(0, 1, 0.0);
         nodesVisited_ = 1;
         for (size_t i = 0; i < n; ++i) {
-            for (const auto& [elapsed, ways] : forward[i]) {
+            std::unordered_map<uint64_t, std::pair<uint64_t, double>> next;
+            const Layer& cur = forward[i];
+            for (size_t j = 0; j < cur.size(); ++j) {
                 for (const Candidate& candidate : events_[i].candidates) {
-                    const uint64_t next = elapsed + candidate.ticks;
-                    if (!remainingFeasible(i + 1, next)) continue;
-                    auto [it, inserted] = forward[i + 1].try_emplace(next, 0);
+                    const uint64_t at = cur.keys[j] + candidate.ticks;
+                    if (!remainingFeasible(i + 1, at)) continue;
+                    auto [it, inserted] = next.try_emplace(at, 0, kNoCount);
                     if (inserted && ++nodesVisited_ > config_.maxNodes) {
                         truncated_ = true;
                         return;
                     }
-                    it->second = saturatingAdd(it->second, ways, countSaturated_);
+                    it->second.first = saturatingAdd(it->second.first, cur.counts[j], countSaturated_);
+                    it->second.second = log2Add(it->second.second, cur.log2s[j]);
                 }
             }
+            std::vector<uint64_t> keys;
+            keys.reserve(next.size());
+            for (const auto& entry : next) keys.push_back(entry.first);
+            std::sort(keys.begin(), keys.end());
+            Layer& out = forward[i + 1];
+            out.keys.reserve(keys.size());
+            out.counts.reserve(keys.size());
+            out.log2s.reserve(keys.size());
+            for (uint64_t key : keys) out.push(key, next[key].first, next[key].second);
         }
 
-        // Backward: number of completions from each co-reachable onset.
+        // Backward: number of completions from each co-reachable onset. A
+        // forward layer is released as soon as it is no longer needed.
         std::vector<Layer> backward(n + 1);
-        if (forward[n].count(targetTicks_)) backward[n][targetTicks_] = 1;
+        if (forward[n].find(targetTicks_) >= 0) backward[n].push(targetTicks_, 1, 0.0);
+        forward[n].release();
         for (size_t i = n; i-- > 0;) {
-            for (const auto& entry : forward[i]) {
-                const uint64_t elapsed = entry.first;
+            const Layer& fwd = forward[i];
+            const Layer& after = backward[i + 1];
+            for (size_t j = 0; j < fwd.size(); ++j) {
                 uint64_t completions = 0;
+                double completionsLog2 = kNoCount;
                 for (size_t c = 0; c < events_[i].candidates.size(); ++c) {
-                    auto next = backward[i + 1].find(elapsed + events_[i].candidates[c].ticks);
-                    if (next == backward[i + 1].end()) continue;
+                    const long idx = after.find(fwd.keys[j] + events_[i].candidates[c].ticks);
+                    if (idx < 0) continue;
+                    const size_t k = static_cast<size_t>(idx);
                     // A candidate is supported iff some valid full assignment uses it.
                     support_[i][c] = true;
-                    completions = saturatingAdd(completions, next->second, countSaturated_);
-                    // Exact number of valid assignments that use this candidate.
+                    completions = saturatingAdd(completions, after.counts[k], countSaturated_);
+                    completionsLog2 = log2Add(completionsLog2, after.log2s[k]);
+                    // Number of valid assignments that use this candidate.
                     candidateCounts_[i][c] = saturatingAdd(
                         candidateCounts_[i][c],
-                        saturatingMul(entry.second, next->second, countSaturated_), countSaturated_);
+                        saturatingMul(fwd.counts[j], after.counts[k], countSaturated_), countSaturated_);
+                    candidateLog2_[i][c] = log2Add(candidateLog2_[i][c], fwd.log2s[j] + after.log2s[k]);
                 }
-                if (completions) backward[i][elapsed] = completions;
+                if (completionsLog2 != kNoCount) backward[i].push(fwd.keys[j], completions, completionsLog2);
             }
+            forward[i].release();
         }
 
-        auto start = backward[0].find(0);
-        if (start == backward[0].end()) return;
-        validCount_ = start->second;
+        const long start = backward[0].find(0);
+        if (start < 0) return;
+        validCount_ = backward[0].counts[static_cast<size_t>(start)];
+        validLog2_ = backward[0].log2s[static_cast<size_t>(start)];
 
         collectBestSolutions(backward);
     }
 
     // k-best by visual log-score over the co-reachable states only. Ties are
-    // broken by candidate order (confidence-sorted), event by event.
+    // broken by candidate order (confidence-sorted), event by event. Memory
+    // is bounded: with too many states, fewer ranked solutions are kept.
     void collectBestSolutions(const std::vector<Layer>& backward) {
         const size_t n = events_.size();
-        const size_t k = config_.limit;
-        std::vector<std::unordered_map<uint64_t, std::vector<RankedEntry>>> best(n + 1);
-        best[n][targetTicks_] = {RankedEntry{0.0, 0, 0}};
+        size_t states = 0;
+        for (const auto& layer : backward) states += layer.size();
+        const size_t k = std::max<size_t>(1, std::min(config_.limit, kRankedEntryBudget / std::max<size_t>(states, 1)));
+        solutionsLimitedByMemory_ = k < config_.limit;
 
+        // best[i]: k slots per state of backward[i]; counts[i]: slots used.
+        std::vector<std::vector<RankedEntry>> best(n + 1);
+        std::vector<std::vector<uint32_t>> used(n + 1);
+        best[n].assign(backward[n].size() * k, RankedEntry{});
+        used[n].assign(backward[n].size(), 1);
+
+        // Scores are compared after quantizing to 1e-9 so products that are
+        // equal in exact arithmetic (0.9*0.7 vs 0.7*0.9) tie deterministically
+        // instead of by floating-point summation order.
+        auto quantized = [](double score) { return std::llround(score * 1e9); };
+        auto better = [&](const RankedEntry& a, const RankedEntry& b) {
+            const long long qa = quantized(a.logScore);
+            const long long qb = quantized(b.logScore);
+            if (qa != qb) return qa > qb;
+            if (a.candidate != b.candidate) return a.candidate < b.candidate;
+            return a.nextRank < b.nextRank;
+        };
+
+        std::vector<RankedEntry> merged;
         for (size_t i = n; i-- > 0;) {
-            for (const auto& entry : backward[i]) {
-                const uint64_t elapsed = entry.first;
-                std::vector<RankedEntry> merged;
+            const Layer& layer = backward[i];
+            const Layer& after = backward[i + 1];
+            best[i].assign(layer.size() * k, RankedEntry{});
+            used[i].assign(layer.size(), 0);
+            for (size_t j = 0; j < layer.size(); ++j) {
+                merged.clear();
                 for (size_t c = 0; c < events_[i].candidates.size(); ++c) {
                     const Candidate& candidate = events_[i].candidates[c];
-                    auto next = best[i + 1].find(elapsed + candidate.ticks);
-                    if (next == best[i + 1].end()) continue;
+                    const long idx = after.find(layer.keys[j] + candidate.ticks);
+                    if (idx < 0) continue;
+                    const size_t base = static_cast<size_t>(idx) * k;
                     const double own = std::log(candidate.confidence);
-                    for (size_t r = 0; r < next->second.size(); ++r)
-                        merged.push_back(RankedEntry{own + next->second[r].logScore, c, r});
+                    for (uint32_t r = 0; r < used[i + 1][static_cast<size_t>(idx)]; ++r)
+                        merged.push_back(RankedEntry{own + best[i + 1][base + r].logScore,
+                                                     static_cast<uint32_t>(c), r});
                 }
-                // Scores are compared after quantizing to 1e-9 so products that
-                // are equal in exact arithmetic (0.9*0.7 vs 0.7*0.9) tie
-                // deterministically instead of by floating-point summation order.
-                auto quantized = [](double score) { return std::llround(score * 1e9); };
-                auto better = [&](const RankedEntry& a, const RankedEntry& b) {
-                    const long long qa = quantized(a.logScore);
-                    const long long qb = quantized(b.logScore);
-                    if (qa != qb) return qa > qb;
-                    if (a.candidate != b.candidate) return a.candidate < b.candidate;
-                    return a.nextRank < b.nextRank;
-                };
                 const size_t keep = std::min(k, merged.size());
                 std::partial_sort(merged.begin(), merged.begin() + static_cast<std::ptrdiff_t>(keep),
                                   merged.end(), better);
-                merged.resize(keep);
-                best[i][elapsed] = std::move(merged);
+                std::copy(merged.begin(), merged.begin() + static_cast<std::ptrdiff_t>(keep), best[i].begin() + static_cast<std::ptrdiff_t>(j * k));
+                used[i][j] = static_cast<uint32_t>(keep);
             }
+            // best[i + 1] is still needed for reconstruction; keep it.
         }
 
-        const auto& roots = best[0][0];
-        for (size_t rank = 0; rank < roots.size(); ++rank) {
+        const long root = backward[0].find(0);
+        for (size_t rank = 0; rank < used[0][static_cast<size_t>(root)]; ++rank) {
             Solution solution;
-            solution.logScore = roots[rank].logScore;
+            solution.logScore = best[0][static_cast<size_t>(root) * k + rank].logScore;
             uint64_t elapsed = 0;
             size_t r = rank;
             for (size_t i = 0; i < n; ++i) {
-                const RankedEntry& step = best[i].at(elapsed)[r];
+                const size_t idx = static_cast<size_t>(backward[i].find(elapsed));
+                const RankedEntry& step = best[i][idx * k + r];
                 solution.choices.push_back(step.candidate);
                 elapsed += events_[i].candidates[step.candidate].ticks;
                 r = step.nextRank;
