@@ -311,6 +311,7 @@ with StemFirstClient("./stem_first_engine") as stem, OMRConstraintClient("./omr_
 1. The Visual Engine reports cheap structure: stems, flags, beams, notehead positions, rests and tuplet brackets. Head fill and augmentation dots are left unchecked (`unchecked=fill,dots`), so a bare stem may be a quarter, a half, or either one dotted.
 2. The solver keeps every reading that fills the bar exactly. Events with one surviving duration are `implied`, and nobody looks at them.
 3. While several readings remain, one check is asked: the head fill or the dot count of one event. With at most 100 readings the order is exactly optimal (minimax over all readings, by iterative deepening). Above 100 readings, or if the exact planner exceeds its budget, the check with the smallest worst case is chosen.
+If a bar is too large for the solver's state budget with features unchecked (hundreds of 1/256 notes), one whole-bar detector pass is requested instead of per-note questions: dots first, then head fill (`batch_checks` in the result).
 4. Pitch follows, from the notehead positions (`pitch_inputs` → `pitch_context_engine`).
 
 ```python

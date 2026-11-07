@@ -96,6 +96,7 @@ class Sweep:
         readings_log2 = result["questions"][0]["readings_before_log2"] if result["questions"] else 0.0
         if result["questions"] and readings <= 100 and len(asked) > len(ids) * 2:
             self.failures.append(f"too many questions: {notation} {asked}")
+        self.stats["batch_checks"] += len(result["batch_checks"])
         self.question_hist[len(asked)] += 1
         self.stats["events"] += len(ids)
         self.stats["implied_events"] += len(implied)
@@ -111,6 +112,7 @@ class Sweep:
                 f"events_implied={self.stats['implied_events']}/{events} "
                 f"({100 * self.stats['implied_events'] / events:.1f}%) "
                 f"questions={self.stats['questions']} log2_worst_case_bound={self.stats['lower_bound']} "
+                f"whole_bar_detector_passes={self.stats['batch_checks']} "
                 f"histogram={dict(sorted(self.question_hist.items()))}")
 
 

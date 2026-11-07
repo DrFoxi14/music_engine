@@ -430,7 +430,8 @@ def optimal_question_count(solutions: Sequence[Sequence[str]], event_ids: Sequen
 def infer_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: str, spacing: float,
                   answer: Any = None, known: Mapping[str, Mapping[str, Any]] | None = None,
                   unchecked: Iterable[str] = ("fill", "dots"), unchecked_max_dots: int = 2,
-                  max_note_denominator: int = 256, **elements: Any) -> dict[str, Any]:
+                  max_note_denominator: int = 256, max_nodes: int = 10_000_000,
+                  **elements: Any) -> dict[str, Any]:
     """Read one voice of one measure asking the Visual Engine as little as possible.
 
     1. STEM-first analysis from structure only (fill and dots unchecked).
@@ -438,6 +439,10 @@ def infer_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: st
     3. While readings remain, ask the single most informative check:
        answer(event_id, feature) -> value ("filled"/"hollow" or a dot count).
        With <= 100 readings the question order is exactly optimal (minimax).
+    If the bar is too large for the solver's state budget with features
+    unchecked, one whole-bar detector pass is requested instead (dots, then
+    fill: the supplied dot primitives / head fills are then used) and
+    reported in "batch_checks".
     `known` holds facts the Visual Engine volunteers up front, per event:
     {"fill": ..., "dots": ..., "duration": ...}.
 
@@ -452,10 +457,24 @@ def infer_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: st
     features = _feature_map(analysis)
     questions: list[dict[str, Any]] = []
     first_implied: list[str] | None = None
+    batch_checks: list[str] = []
     while True:
         events = _restrict(analysis, facts)
         rhythm = solver_client.resolve(meter, events, max_note_denominator=max_note_denominator,
-                                       limit=EXACT_PLAN_LIMIT, max_nodes=10_000_000)
+                                       limit=EXACT_PLAN_LIMIT, max_nodes=max_nodes)
+        if rhythm["status"] == "incomplete" and unchecked:
+            # Too many readings for the state budget (e.g. hundreds of 1/256
+            # notes with nothing checked). Ask the Visual Engine to run one
+            # detector over the whole bar - dots first, then head fill - and
+            # use the primitives it reports, instead of per-note questions.
+            feature = "dots" if "dots" in unchecked else unchecked[0]
+            unchecked = tuple(u for u in unchecked if u != feature)
+            batch_checks.append(feature)
+            analysis = stem_client.analyze(spacing, meter=meter, unchecked=unchecked,
+                                           unchecked_max_dots=unchecked_max_dots, **elements)
+            features = _feature_map(analysis)
+            first_implied = None
+            continue
         plan = plan_checks(analysis, rhythm)
         if first_implied is None:
             first_implied = plan["implied"]
@@ -493,4 +512,5 @@ def infer_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: st
         "durations": durations,
         "implied_without_questions": first_implied or [],
         "questions": questions,
+        "batch_checks": batch_checks,
     }

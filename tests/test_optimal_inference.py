@@ -187,6 +187,20 @@ class OptimalInferenceTests(unittest.TestCase):
                              unchecked_max_dots=3, answer=lambda e, f: truth[e][f])
         self.assertEqual(wide["durations"], {"s0": "15/16", "s1": "1/4"})
 
+    def test_oversized_bar_falls_back_to_whole_bar_detectors(self):
+        # Unchecked, this bar needs 125 solver states; with a budget of 20 it is
+        # "too large", so the loop asks for one whole-bar dot pass (9 states)
+        # and then reads the bar exactly.
+        from score_renderer import render
+        elements, truth = render("n8. n16 n4 [3:2 n8 r8 n8] n4.. n16", (5, 4), seed=3)
+        by_id = {t["id"]: t for t in truth}
+        result = infer_measure(self.stem, self.solver, meter="5/4", spacing=S, max_nodes=20,
+                               answer=lambda e, f: by_id[e][f], **elements)
+        self.assertEqual(result["status"], "resolved_unique")
+        self.assertEqual(result["batch_checks"], ["dots"])
+        want = [f"{t['duration'].numerator}/{t['duration'].denominator}" for t in truth]
+        self.assertEqual([result["durations"][t["id"]] for t in truth], want)
+
     # -- exhaustive and sampled end-to-end sweeps -----------------------------------------
 
     def run_sweep(self, meter, max_den, options, mode, count=0, category="ALL"):
