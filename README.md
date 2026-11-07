@@ -304,6 +304,30 @@ with StemFirstClient("./stem_first_engine") as stem, OMRConstraintClient("./omr_
     # PitchContextClient(...).resolve(..., notes=notes, stems=stems)
 ```
 
+### STEM-first order: the stems tell Vision where to look
+
+The stem is the unit; noteheads, dots, rests and pitch are completions. `PLAN` turns the cheapest detections into a search plan before any notehead is looked for:
+
+1. The Visual Engine finds only stems and what touches their ends (flags, beams).
+2. `PLAN` decides, for each stem, the free end and the direction, plus the duration the stem already implies (`durations_before_heads`: 1 beam → 1/8, ..., none → 1/4 or 1/2). It also returns the regions to search:
+   - `notehead`: one box at the notehead end, beside the stem on the side the direction implies. In the quarter-note branch there is one box per end, and exactly one of them should hold the head.
+   - `chord_noteheads`: along the stem, away from the free end.
+   - `augmentation_dots`: right of the head, on its row.
+3. The Visual Engine confirms noteheads and dots only inside those regions, then `ANALYZE` reads the bar as before.
+
+All region sizes are multiples of the staff spacing; the stem's length is never used. Whole notes (no stem) and rests stay with their own detectors.
+
+```python
+from stem_first_client import read_measure_stem_first, in_regions
+
+result = read_measure_stem_first(
+    stem, solver, meter="4/4", spacing=10, stems=stems, flags=flags, beams=beams, rests=rests,
+    detect_heads=lambda regions: vision.find_heads(regions),   # search only these boxes
+    detect_dots=lambda regions: vision.find_dots(regions))
+```
+
+In the end-to-end sweeps every stemmed notehead lies inside its planned region, and reading the bar from those regions alone gives exactly the true durations. On the synthetic layout (one event every four staff spaces, denser than real engraving) the notehead regions cover about 15% of the bar.
+
 ### Optimal inference: ask Vision only what the bar does not imply
 
 `infer_measure()` reads a measure from structure alone and asks the Visual Engine only real ambiguities:

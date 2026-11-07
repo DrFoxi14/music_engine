@@ -143,6 +143,40 @@ class StemFirstClient:
             raise ValueError(result.get("message", "STEM-first engine error."))
         return result
 
+    def plan(self, spacing: float, *, stems: Iterable[Mapping[str, Any]],
+             flags: Iterable[Mapping[str, Any]] = (), beams: Iterable[Mapping[str, Any]] = ()) -> dict[str, Any]:
+        """STEM-first search plan from stems, flags and beams only.
+
+        For each stem: which end is free, the direction, the duration the stem
+        already implies, and the regions where the Visual Engine should look
+        for the notehead (one, or one per end in the quarter-note branch), for
+        chord members and for augmentation dots.
+        """
+        tokens = ["PLAN", f"spacing={_num(spacing, 'spacing')}"]
+        for s in stems:
+            tokens.append("stem=" + ",".join([_id(s["id"], "stem id"), _num(s["x1"], "x1"), _num(s["y1"], "y1"),
+                                               _num(s["x2"], "x2"), _num(s["y2"], "y2")]))
+        for f in flags:
+            tokens.append("flag=" + ",".join([_id(f["id"], "flag id")] + _box(f, "flag") + [str(int(f.get("count", 1)))]))
+        for b in beams:
+            thickness = b.get("thickness")
+            tokens.append("beam=" + ",".join([_id(b["id"], "beam id"), _num(b["x1"], "x1"), _num(b["y1"], "y1"),
+                                               _num(b["x2"], "x2"), _num(b["y2"], "y2"),
+                                               "-" if thickness is None else _num(thickness, "thickness")]))
+        with self._lock:
+            if self._process.poll() is not None:
+                raise RuntimeError("STEM-first engine has stopped.")
+            assert self._process.stdin is not None and self._process.stdout is not None
+            self._process.stdin.write(" ".join(tokens) + "\n")
+            self._process.stdin.flush()
+            line = self._process.stdout.readline()
+        if not line:
+            raise RuntimeError("STEM-first engine closed its output.")
+        result = json.loads(line)
+        if result.get("type") == "error":
+            raise ValueError(result.get("message", "STEM-first engine error."))
+        return result
+
     def close(self) -> None:
         process = getattr(self, "_process", None)
         if process is None:
@@ -514,3 +548,60 @@ def infer_measure(stem_client: StemFirstClient, solver_client: Any, *, meter: st
         "questions": questions,
         "batch_checks": batch_checks,
     }
+
+
+# ---------------------------------------------------------------------------
+# STEM-first order end to end: stems -> search plan -> heads only where the
+# plan says -> analysis -> exact measure resolution.
+# ---------------------------------------------------------------------------
+
+def _inside(box: Mapping[str, float], x: float, y: float) -> bool:
+    return box["left"] <= x <= box["right"] and box["top"] <= y <= box["bottom"]
+
+
+def regions_of(plan: Mapping[str, Any], *purposes: str) -> list[dict[str, Any]]:
+    """Every planned region with the given purposes, tagged with its stem id."""
+    out = []
+    for stem in plan["stems"]:
+        for region in stem["regions"]:
+            if not purposes or region["purpose"] in purposes:
+                out.append({**region, "stem_id": stem["id"]})
+    return out
+
+
+def in_regions(items: Iterable[Mapping[str, Any]], regions: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Items (noteheads with a bbox, or dots with x/y) whose center lies inside a region."""
+    found = []
+    for item in items:
+        if "bbox" in item:
+            b = item["bbox"]
+            x, y = (b["left"] + b["right"]) / 2, (b["top"] + b["bottom"]) / 2
+        else:
+            x, y = item["x"], item["y"]
+        if any(_inside(r["box"], x, y) for r in regions):
+            found.append(dict(item))
+    return found
+
+
+def read_measure_stem_first(stem_client: StemFirstClient, solver_client: Any, *, meter: str, spacing: float,
+                            stems: Sequence[Mapping[str, Any]], detect_heads: Any, detect_dots: Any = None,
+                            flags: Sequence[Mapping[str, Any]] = (), beams: Sequence[Mapping[str, Any]] = (),
+                            stemless_heads: Sequence[Mapping[str, Any]] = (),
+                            rests: Sequence[Mapping[str, Any]] = (), tuplets: Sequence[Mapping[str, Any]] = (),
+                            max_note_denominator: int = 256) -> dict[str, Any]:
+    """Read one voice of one measure in STEM-first order.
+
+    detect_heads(regions) -> noteheads found inside the notehead/chord regions
+    detect_dots(regions)  -> dots found inside the dot regions (optional)
+    Stemless heads (whole notes) and rests come from their own modules.
+    """
+    plan = stem_client.plan(spacing, stems=stems, flags=flags, beams=beams)
+    head_regions = regions_of(plan, "notehead", "chord_noteheads")
+    heads = list(detect_heads(head_regions)) + [dict(h) for h in stemless_heads]
+    dots = list(detect_dots(regions_of(plan, "augmentation_dots"))) if detect_dots else []
+    measure = read_measure(stem_client, solver_client, meter=meter, spacing=spacing,
+                           max_note_denominator=max_note_denominator, stems=stems, noteheads=heads,
+                           flags=flags, beams=beams, dots=dots, rests=rests, tuplets=tuplets)
+    measure["plan"] = plan
+    measure["searched_regions"] = len(head_regions)
+    return measure

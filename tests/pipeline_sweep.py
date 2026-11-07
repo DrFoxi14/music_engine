@@ -24,7 +24,8 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 from score_renderer import render  # noqa: E402
 from search_engine_client import SearchEngineClient  # noqa: E402
-from stem_first_client import StemFirstClient, infer_measure, read_measure  # noqa: E402
+from stem_first_client import (StemFirstClient, in_regions, infer_measure, read_measure,  # noqa: E402
+                               read_measure_stem_first)
 from omr_constraint_client import OMRConstraintClient  # noqa: E402
 
 
@@ -71,7 +72,36 @@ class Sweep:
             self.failures.append(f"full evidence: {notation} -> {got} (want {want})")
             return
 
-        # 2. Minimal evidence + questions answered by the truth.
+        # 2. STEM-first order: the plan from stems/flags/beams says where to look;
+        #    the Visual Engine only "sees" heads and dots inside those regions.
+        stemmed = {s["id"][1:] for s in elements["stems"]}
+        stemless = [h for h in elements["noteheads"] if h["id"][0] == "h" and h["id"][1:] not in stemmed]
+        stemmed_heads = [h for h in elements["noteheads"] if h not in stemless]
+        first = read_measure_stem_first(
+            self.stem, self.solver, meter=meter_text, spacing=10, stems=elements["stems"],
+            flags=elements["flags"], beams=elements["beams"], rests=elements["rests"],
+            tuplets=elements["tuplets"], stemless_heads=stemless,
+            detect_heads=lambda regions: in_regions(stemmed_heads, regions),
+            detect_dots=lambda regions: in_regions(elements["dots"], regions))
+        got = [e["duration"] for e in first["events"]]
+        if [e["id"] for e in first["events"]] != ids or got != want:
+            self.failures.append(f"stem-first order: {notation} -> {got} (want {want})")
+            return
+        found = len(in_regions(stemmed_heads, [r for st in first["plan"]["stems"] for r in st["regions"]
+                                                if r["purpose"] in ("notehead", "chord_noteheads")]))
+        self.stats["heads_total"] += len(stemmed_heads)
+        self.stats["heads_found_in_regions"] += found
+        xs = [p for st in elements["stems"] for p in (st["x1"], st["x2"])] + [h["bbox"]["left"] for h in elements["noteheads"]]
+        ys = [p for st in elements["stems"] for p in (st["y1"], st["y2"])] + [h["bbox"]["top"] for h in elements["noteheads"]]
+        if xs:
+            self.stats["bar_area"] += (max(xs) - min(xs) + 40) * (max(ys) - min(ys) + 20)
+            for st in first["plan"]["stems"]:
+                for r in st["regions"]:
+                    b = r["box"]
+                    key = "head_area" if r["purpose"] in ("notehead", "chord_noteheads") else "dot_area"
+                    self.stats[key] += (b["right"] - b["left"]) * (b["bottom"] - b["top"])
+
+        # 3. Minimal evidence + questions answered by the truth.
         by_id = {t["id"]: t for t in truth}
         asked = []
 
@@ -113,6 +143,9 @@ class Sweep:
                 f"({100 * self.stats['implied_events'] / events:.1f}%) "
                 f"questions={self.stats['questions']} log2_worst_case_bound={self.stats['lower_bound']} "
                 f"whole_bar_detector_passes={self.stats['batch_checks']} "
+                f"stem_first_heads_found={self.stats['heads_found_in_regions']}/{self.stats['heads_total']} "
+                f"head_search_area={100 * self.stats['head_area'] / max(self.stats['bar_area'], 1):.0f}% "
+                f"dot_search_area={100 * self.stats['dot_area'] / max(self.stats['bar_area'], 1):.0f}% "
                 f"histogram={dict(sorted(self.question_hist.items()))}")
 
 

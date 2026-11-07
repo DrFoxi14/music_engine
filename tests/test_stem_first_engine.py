@@ -14,7 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from stem_first_client import StemFirstClient, pitch_inputs, read_measure, solver_events  # noqa: E402
+from stem_first_client import (StemFirstClient, in_regions, pitch_inputs, read_measure,  # noqa: E402
+                               read_measure_stem_first, regions_of, solver_events)
 from omr_constraint_client import OMRConstraintClient  # noqa: E402
 from pitch_context_client import PitchContextClient  # noqa: E402
 
@@ -360,6 +361,92 @@ class StemFirstEngineTests(unittest.TestCase):
         events = solver_events(result)
         self.assertEqual([e["id"] for e in events], ["a", "b"])
         self.assertEqual(len(events[0]["candidates"]), 2)
+
+    # -- STEM-first search plan: stems tell Vision where to look -------------------------
+
+    @staticmethod
+    def center(head_):
+        b = head_["bbox"]
+        return (b["left"] + b["right"]) / 2, (b["top"] + b["bottom"]) / 2
+
+    @staticmethod
+    def contains(region, point):
+        b = region["box"]
+        return b["left"] <= point[0] <= b["right"] and b["top"] <= point[1] <= b["bottom"]
+
+    def test_plan_puts_the_head_region_at_the_end_opposite_the_flag(self):
+        up = up_stem("up", 100, 120)
+        down = down_stem("down", 200, 100)
+        plan = self.engine.plan(S, stems=[up, down],
+                                flags=[flag_at("fu", top(up)), flag_at("fd", bottom(down), upward_stem=False)])
+        stems = {st["id"]: st for st in plan["stems"]}
+        for stem_id, true_head, direction in (("up", head("hu", 100, 120), "up"), ("down", head("hd", 200, 100), "down")):
+            st = stems[stem_id]
+            self.assertEqual(st["direction"], direction)
+            self.assertEqual(st["durations_before_heads"], ["1/8"])
+            self.assertFalse(st["fill_decides"])
+            heads = [r for r in st["regions"] if r["purpose"] == "notehead"]
+            self.assertEqual(len(heads), 1)
+            self.assertTrue(self.contains(heads[0], self.center(true_head)))
+            self.assertIn("augmentation_dots", [r["purpose"] for r in st["regions"]])
+
+    def test_plan_quarter_branch_searches_both_ends_and_one_holds_the_head(self):
+        stem = up_stem("q", 100, 120, swap=True)
+        plan = self.engine.plan(S, stems=[stem])
+        st = plan["stems"][0]
+        self.assertEqual(st["branch"], "quarter_branch")
+        self.assertTrue(st["fill_decides"])
+        self.assertEqual(st["durations_before_heads"], ["1/4", "1/2"])
+        heads = [r for r in st["regions"] if r["purpose"] == "notehead"]
+        self.assertEqual(sorted(r["hypothesis"] for r in heads), ["A", "B"])
+        holding = [r for r in heads if self.contains(r, self.center(head("h", 100, 120)))]
+        self.assertEqual(len(holding), 1)
+
+    def test_plan_reads_beam_counts_before_any_head(self):
+        stems = [up_stem(f"s{i}", 100 + 25 * i, 120, length=45) for i in range(4)]
+        plan = self.engine.plan(S, stems=stems, beams=beams_between("b", stems, [top(s) for s in stems], 3, +1))
+        self.assertEqual([st["durations_before_heads"] for st in plan["stems"]], [["1/32"]] * 4)
+        self.assertTrue(all(st["direction"] == "up" for st in plan["stems"]))
+
+    def test_plan_regions_do_not_depend_on_stem_length(self):
+        sizes = set()
+        for length in (18, 35, 90):
+            stem = up_stem("s", 100, 120, length=length)
+            plan = self.engine.plan(S, stems=[stem], flags=[flag_at("f", top(stem))])
+            region = [r for r in plan["stems"][0]["regions"] if r["purpose"] == "notehead"][0]["box"]
+            sizes.add((region["right"] - region["left"], region["bottom"] - region["top"], region["top"]))
+        self.assertEqual(len(sizes), 1)
+
+    def test_plan_reports_conflicts_without_regions(self):
+        stem = up_stem("s", 100, 120)
+        plan = self.engine.plan(S, stems=[stem],
+                                flags=[flag_at("f1", top(stem)), flag_at("f2", bottom(stem), upward_stem=False)])
+        self.assertEqual(plan["stems"][0]["branch"], "conflict")
+        self.assertEqual(plan["stems"][0]["regions"], [])
+        self.assertIn("flag_or_beam_at_both_ends", [g["reason"] for g in plan["visual_guidance"]])
+
+    def test_stem_first_order_end_to_end(self):
+        # Vision gives stems and beams; heads are looked for only where the plan says.
+        stems = [up_stem(f"s{i}", 100 + 25 * i, 120) for i in range(2)] + [down_stem("q", 200, 100)]
+        heads = [head("h0", 100, 120), head("h1", 125, 120), head("hq", 200, 100, "hollow"),
+                 head("decoy", 160, 60)]             # ink far from every stem end: never looked at
+        dots = [{"id": "d", "x": 213, "y": 98}]
+        asked = []
+
+        def detect_heads(regions):
+            asked.extend(regions)
+            return in_regions(heads, regions)
+
+        with OMRConstraintClient(self.solver_binary) as solver:
+            result = read_measure_stem_first(
+                self.engine, solver, meter="1/1", spacing=S, stems=stems,
+                beams=beams_between("b", stems[:2], [top(s) for s in stems[:2]], 1, +1),
+                detect_heads=detect_heads, detect_dots=lambda regions: in_regions(dots, regions))
+        self.assertEqual(result["rhythm"]["status"], "resolved_unique")
+        self.assertEqual([e["duration"] for e in result["events"]], ["1/8", "1/8", "3/4"])
+        self.assertTrue(asked)
+        self.assertTrue(all("stem_id" in r for r in asked))
+        self.assertNotIn("decoy", [h for e in result["events"] for h in e["noteheads"]])
 
     def test_invalid_input_is_rejected(self):
         with self.assertRaises(ValueError):

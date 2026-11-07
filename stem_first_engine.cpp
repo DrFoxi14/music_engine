@@ -48,6 +48,10 @@
  *     dot=id,x,y,confidence \
  *     rest=id,left,top,right,bottom,value,dots \
  *     tuplet=id,label,member;member;...
+ *   PLAN spacing=10 stem=... flag=... beam=...
+ *     STEM-first search plan: from stems, flags and beams alone, where to
+ *     look for each notehead (one region, or one per end for quarter
+ *     notes), for chord members and for dots. Noteheads are not needed.
  *   EXIT
  *
  *   fill      = filled | hollow | unknown   (fill_confidence in (0,1])
@@ -448,9 +452,8 @@ private:
 
     Point end(const Stem& stem, int which) const { return which == 0 ? stem.a : stem.b; }
 
-    StemResult analyzeStem(const Stem& stem) {
-        StemResult res;
-        res.stem = &stem;
+    // Flags and beams at each end of a stem (no notehead is needed for this).
+    void attachments(const Stem& stem, StemResult& res) {
         const double length = distance(stem.a, stem.b);
 
         // Flags: attached at the end they touch.
@@ -488,6 +491,12 @@ private:
         }
         if (!crossings.empty() && !connected[0] && !connected[1])
             guidance_.push_back({stem.id, "beam_crosses_stem_away_from_its_ends", {"beam_geometry", "stem_endpoints"}});
+    }
+
+    StemResult analyzeStem(const Stem& stem) {
+        StemResult res;
+        res.stem = &stem;
+        attachments(stem, res);
         // Noteheads connected to the stem, and which end they sit at.
         for (size_t i = 0; i < r_.noteheads.size(); ++i) {
             const Box& box = r_.noteheads[i].box;
@@ -827,6 +836,116 @@ private:
         return out + "]";
     }
 
+public:
+    // STEM-first search plan: only stems, flags and beams are known. For each
+    // stem, say where the Visual Engine must look for the notehead (one
+    // region, or one per end in the quarter-note branch), for chord members
+    // along the stem, and for augmentation dots. Every size is a multiple of
+    // the staff spacing; the stem's length is never used.
+    std::string plan() {
+        std::ostringstream out;
+        out << std::setprecision(6);
+        out << "{\"type\":\"search_plan\",\"stems\":[";
+        double area = 0;
+        size_t regionCount = 0;
+        for (size_t i = 0; i < r_.stems.size(); ++i) {
+            const Stem& stem = r_.stems[i];
+            StemResult res;
+            res.stem = &stem;
+            attachments(stem, res);
+            const bool freeA = res.flagsAt[0] + res.beamsAt[0] > 0;
+            const bool freeB = res.flagsAt[1] + res.beamsAt[1] > 0;
+            std::string branch, direction;
+            int freeEnd = -1;
+            if (freeA && freeB) {
+                branch = "conflict";
+                guidance_.push_back({stem.id, "flag_or_beam_at_both_ends", {"flag_detection", "beam_detection", "stem_endpoints"}});
+            } else if (freeA || freeB) {
+                freeEnd = freeA ? 0 : 1;
+                const bool hasFlag = res.flagsAt[freeEnd] > 0, hasBeam = res.beamsAt[freeEnd] > 0;
+                branch = hasFlag && hasBeam ? "flag_and_beam" : (hasFlag ? "flag" : "beam");
+                direction = end(stem, 1 - freeEnd).y > end(stem, freeEnd).y ? "up" : "down";
+            } else {
+                branch = "quarter_branch";
+            }
+
+            std::vector<std::string> regions;
+            auto addRegion = [&](const std::string& purpose, const char* hypothesis, Box box, const std::string& reason) {
+                area += (box.right - box.left) * (box.bottom - box.top);
+                ++regionCount;
+                std::ostringstream r;
+                r << std::setprecision(6) << "{\"purpose\":\"" << purpose << "\",\"hypothesis\":"
+                  << (hypothesis ? std::string("\"") + hypothesis + "\"" : std::string("null"))
+                  << ",\"box\":{\"left\":" << box.left << ",\"top\":" << box.top << ",\"right\":" << box.right
+                  << ",\"bottom\":" << box.bottom << "},\"reason\":\"" << jsonEscape(reason) << "\"}";
+                regions.push_back(r.str());
+            };
+            const char* names[2] = {"A", "B"};
+            // Head geometry: about 1.3 spaces wide, beside the stem; dots up to
+            // three spaces to its right, on the head's row (+/- one space).
+            auto headBox = [&](Point p, const std::string& dir) {
+                const double left = dir == "up" ? p.x - 1.8 * s_ : (dir == "down" ? p.x - 0.5 * s_ : p.x - 1.8 * s_);
+                const double right = dir == "up" ? p.x + 0.5 * s_ : (dir == "down" ? p.x + 1.8 * s_ : p.x + 1.8 * s_);
+                return Box{left, p.y - 1.0 * s_, right, p.y + 1.0 * s_};
+            };
+            auto dotBox = [&](const Box& head, double top, double bottom) {
+                return Box{head.right, top, head.right + 3.0 * s_, bottom};
+            };
+            if (freeEnd >= 0) {
+                const int headEnd = 1 - freeEnd;
+                const Point h = end(stem, headEnd), f = end(stem, freeEnd);
+                const std::string because = std::string(res.flagsAt[freeEnd] ? "flag" : "beam") + " at " +
+                                            names[freeEnd] + " marks it free; notehead at " + names[headEnd];
+                const Box head = headBox(h, direction);
+                addRegion("notehead", nullptr, head, because);
+                // Chord members sit along the stem, never at the free end.
+                const double towardFree = f.y < h.y ? -1.0 : 1.0;
+                const double chordFar = f.y - towardFree * 1.5 * s_;
+                double top = std::min(h.y + towardFree * 0.5 * s_, chordFar);
+                double bottom = std::max(h.y + towardFree * 0.5 * s_, chordFar);
+                if ((chordFar - h.y) * towardFree > 0.5 * s_)
+                    addRegion("chord_noteheads", nullptr, Box{head.left, top, head.right, bottom},
+                              "further heads of a chord share this stem, away from the free end");
+                addRegion("augmentation_dots", nullptr,
+                          dotBox(head, std::min(head.top, top), std::max(head.bottom, bottom)),
+                          "dots right of the head(s)");
+            } else if (branch == "quarter_branch") {
+                for (int e = 0; e < 2; ++e) {
+                    const Point p = end(stem, e);
+                    const Box head = headBox(p, "");
+                    addRegion("notehead", names[e], head,
+                              std::string("no flag or beam: test end ") + names[e] + " (exactly one should hold the head)");
+                    addRegion("augmentation_dots", names[e], dotBox(head, head.top, head.bottom),
+                              std::string("dots, if the head is at ") + names[e]);
+                }
+            }
+
+            out << (i ? "," : "") << "{\"id\":\"" << jsonEscape(stem.id) << "\",\"branch\":\"" << branch << "\""
+                << ",\"free_end\":" << (freeEnd >= 0 ? std::string("\"") + names[freeEnd] + "\"" : std::string("null"))
+                << ",\"notehead_end\":" << (freeEnd >= 0 ? std::string("\"") + names[1 - freeEnd] + "\"" : std::string("null"))
+                << ",\"direction\":" << (direction.empty() ? std::string("null") : "\"" + direction + "\"")
+                << ",\"flags\":{\"A\":" << res.flagsAt[0] << ",\"B\":" << res.flagsAt[1] << "},\"beams\":{\"A\":"
+                << res.beamsAt[0] << ",\"B\":" << res.beamsAt[1] << "}";
+            // What the stem already says about the duration, before any head is seen.
+            const int k = freeEnd >= 0 ? std::max(res.flagsAt[freeEnd], res.beamsAt[freeEnd]) : 0;
+            out << ",\"fill_decides\":" << (branch == "quarter_branch" ? "true" : "false")
+                << ",\"durations_before_heads\":[";
+            if (branch == "quarter_branch") out << "\"1/4\",\"1/2\"";
+            else if (k > 0) out << "\"" << Fraction::make(1, int64_t(4) << k).str() << "\"";
+            out << "],\"regions\":[";
+            for (size_t r = 0; r < regions.size(); ++r) out << (r ? "," : "") << regions[r];
+            out << "]}";
+        }
+        out << "],\"region_count\":" << regionCount << ",\"region_area\":" << area << ",\"visual_guidance\":[";
+        for (size_t i = 0; i < guidance_.size(); ++i) {
+            out << (i ? "," : "") << "{\"target\":\"" << jsonEscape(guidance_[i].target) << "\",\"reason\":\""
+                << jsonEscape(guidance_[i].reason) << "\"}";
+        }
+        out << "],\"next_step\":\"Detect noteheads only inside the notehead/chord regions (and dots inside the dot regions), then send ANALYZE with the stems and what was found.\"}";
+        return out.str();
+    }
+
+private:
     std::string json() const {
         std::ostringstream out;
         out << std::setprecision(6);
@@ -897,14 +1016,14 @@ int main() {
         input >> command;
         for (char& c : command) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
         if (command == "EXIT" || command == "QUIT") break;
-        if (command != "ANALYZE") {
-            emitError("unknown command; use ANALYZE or EXIT");
+        if (command != "ANALYZE" && command != "PLAN") {
+            emitError("unknown command; use PLAN, ANALYZE or EXIT");
             continue;
         }
         try {
             const Request request = parseRequest(input);
             Analyzer analyzer(request);
-            std::cout << analyzer.run() << '\n' << std::flush;
+            std::cout << (command == "PLAN" ? analyzer.plan() : analyzer.run()) << '\n' << std::flush;
         } catch (const std::exception& error) {
             emitError(error.what());
         }
