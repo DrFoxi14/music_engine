@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -85,6 +86,44 @@ class RhythmSearchEngineTests(unittest.TestCase):
             "NOTES", exact={"note@2": 1, "note@4": 2}, contains=["note@4", "note@2"], limit=10
         )
         self.assertEqual(len(contains["patterns"]), 2)
+
+    def test_known_beginning_asks_what_can_follow(self) -> None:
+        # the vision engine has read a quarter and a half and sees one more notehead:
+        # only one more quarter fits (OMR dialogue, IDSR)
+        notes = self.engine.search(
+            "NOTES", prefix=["note@4", "note@2"], min_events=3, max_events=3, max_note_slots=3, limit=10
+        )
+        self.assertEqual([[e["descriptor"] for e in p["events"]] for p in notes["patterns"]],
+                         [["note@4", "note@2", "note@4"]])
+        # no notehead there: the prefix is enforced while searching, so a rest is found at once
+        rests = self.engine.search(
+            "RESTS", prefix=["note@4", "note@2"], min_events=3, max_events=3, max_note_slots=2, limit=10
+        )
+        self.assertFalse(rests["summary"]["truncated"])
+        self.assertIn(["note@4", "note@2", "rest@4"], [[e["descriptor"] for e in p["events"]] for p in rests["patterns"]])
+        self.assertLess(rests["summary"]["nodes_visited"], 1000)
+
+    def test_positions_constrain_each_event(self) -> None:
+        # what the vision is sure of, symbol by symbol: a quarter, a half, then one notehead whose
+        # value is unknown among four; only a quarter completes the measure
+        result = self.engine.search(
+            "NOTES", positions=[["note@4"], ["note@2"], ["note@4", "note@8", "dotted_note@8", "note@16"]], limit=10
+        )
+        self.assertEqual([[e["descriptor"] for e in p["events"]] for p in result["patterns"]],
+                         [["note@4", "note@2", "note@4"]])
+        self.assertFalse(result["summary"]["has_more"])
+
+    def test_positions_tuplet_masks_and_wildcard(self) -> None:
+        result = self.engine.search(
+            "RESTS", positions=[["*"], ["rest@4"], ["triplet@8#NRN"]], limit=50, max_nodes=100000
+        )
+        self.assertTrue(result["patterns"])
+        for p in result["patterns"]:
+            self.assertEqual(len(p["events"]), 3)
+            self.assertEqual(p["events"][1]["descriptor"], "rest@4")
+            self.assertEqual(p["events"][2]["tuplet_slots"], ["note", "rest", "note"])
+        with self.assertRaises(ValueError):
+            self.engine.search("NOTES", positions=[["note@4"]], max_events=0)
 
     def test_page_limit_reports_more_results(self) -> None:
         result = self.engine.search("NOTES", exact={"note@2": 1, "note@4": 2}, limit=1)
@@ -248,6 +287,74 @@ class RhythmSearchEngineTests(unittest.TestCase):
         )
         self.assertEqual(len(result["patterns"]), 0)
         self.assertEqual(result["summary"]["truncated"], False)
+
+    def test_uncommon_ratio_in_exact_does_not_restrict_other_tuplets(self) -> None:
+        # 11:8 is generated on demand because exact names it, but that must
+        # not silently turn into a tuplet_ratios=11:8 filter that drops the
+        # triplet also requested by exact.
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@16:11:8": 1, "triplet@4": 1},
+            limit=10,
+        )
+        self.assertEqual(len(result["patterns"]), 2)
+        ratios = {
+            tuple(event["tuplet_ratio"] for event in pattern["events"])
+            for pattern in result["patterns"]
+        }
+        self.assertEqual(ratios, {("11:8", "3:2"), ("3:2", "11:8")})
+
+    def test_explicit_ratio_filter_still_excludes_inferred_exact_ratio(self) -> None:
+        result = self.engine.search(
+            "NOTES",
+            exact={"tuplet@16:11:8": 1, "triplet@4": 1},
+            tuplet_ratios=["3:2"],
+            limit=10,
+        )
+        self.assertEqual(len(result["patterns"]), 0)
+        self.assertFalse(result["summary"]["truncated"])
+
+    def test_rests_category_keeps_all_note_tuplets(self) -> None:
+        # A bar needs one rest somewhere, not a rest inside every tuplet.
+        result = self.engine.search(
+            "RESTS",
+            exact={"rest@4": 1, "triplet@8": 1, "note@2": 1},
+            triplet_patterns=["NNN"],
+            limit=20,
+        )
+        self.assertEqual(len(result["patterns"]), 6)
+        for pattern in result["patterns"]:
+            self.assertEqual(pattern["summary"]["rest_slots"], 1)
+
+    def test_prefix_is_pruned_during_search(self) -> None:
+        result = self.engine.search("NOTES", prefix=["note@16", "note@16"], limit=3, max_nodes=2000)
+        self.assertEqual(len(result["patterns"]), 3)
+        self.assertFalse(result["summary"]["truncated"])
+        for pattern in result["patterns"]:
+            self.assertEqual([e["descriptor"] for e in pattern["events"][:2]], ["note@16", "note@16"])
+
+    def test_rests_count_matches_math_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            math_binary = Path(tmp) / "math_engine"
+            compiler = os.environ.get("CXX", "clang++")
+            if subprocess.run(["which", compiler], capture_output=True).returncode != 0:
+                compiler = "g++"
+            subprocess.run([compiler, "-std=c++17", "-O2", str(ROOT / "math_engine.cpp"),
+                            "-o", str(math_binary)], check=True)
+            for meter in ((2, 4), (3, 8)):
+                out = subprocess.run([str(math_binary), str(meter[0]), str(meter[1]), "8"],
+                                     input="COUNT RESTS\nCOUNT NOTES\nEXIT\n",
+                                     capture_output=True, text=True, check=True).stdout.splitlines()
+                expected = {json.loads(line)["category"]: int(json.loads(line)["count"]) for line in out[1:]}
+                with SearchEngineClient(self.executable, meter[0], meter[1], 8) as engine:
+                    for category in ("RESTS", "NOTES"):
+                        result = engine.search(
+                            category,
+                            kinds=["note", "dotted_note", "rest", "dotted_rest", "triplet", "measure_rest"],
+                            limit=1000, max_nodes=10_000_000,
+                        )
+                        self.assertFalse(result["summary"]["has_more"])
+                        self.assertEqual(result["summary"]["matches_seen"], expected[category], (meter, category))
 
     def test_legacy_triplet_descriptor_and_pattern_remain_compatible(self) -> None:
         result = self.engine.search(

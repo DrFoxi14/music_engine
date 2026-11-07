@@ -4,10 +4,27 @@ A C++17 toolkit for exact rhythmic pattern generation, enumeration, and filtered
 
 ## Components
 
+- `stem_first_engine.cpp` — STEM-first reading of stemmed notes (see [DrFoxi14/stem](https://github.com/DrFoxi14/stem)): free end from flag/beam, notehead at the opposite end, both ends tested for quarter notes, duration candidates from flag/beam count, head fill, dots and (nested) tuplets.
+- `omr_constraint_solver.cpp` — exact measure arithmetic over duration candidates.
+- `pitch_context_engine.cpp` — staff position, clef, key signature and accidentals to pitch.
+- `search_engine.cpp` + `rhythm_space.hpp` — the complete rhythmic space of a measure (nested tuplets, multiple dots, any ratio) with exact counting, indexing, sampling and template search; plus the legacy filtered SEARCH.
 - `math_engine.cpp` — compact dynamic-programming index for counting and retrieving rhythmic patterns by index, with separate note-only and at-least-one-rest categories.
-- `search_engine.cpp` — bounded, filter-driven search and lazy pattern generation.
-- `math_engine_client.py` — Python client for Math Engine's counting and indexed retrieval API.
-- `search_engine_client.py` — Python client for filtered search and generation.
+- `*_client.py` — Python clients for each engine; `stem_first_client.py` also has pipeline helpers.
+- `omr_dialogue/` — the Vision ⇄ Search Engine dialogue after Paul's Vision specification: a synthetic Vision that reports only what is in the image (per-property confidence, `unknown` kept unknown, never a duration), targeted re-examination, and `positions` constraints for the Search Engine. See `omr_dialogue/README.md`. `infer_measure()` in `stem_first_client.py` is the solver-based counterpart (exact counts, minimax question order).
+
+### OMR pipeline (no visual detection here)
+
+```
+Visual Engine (pixels) ──► stems, noteheads, flags, beams, dots, rests, tuplet brackets
+                              │
+                    stem_first_engine          free end / notehead end, stem direction,
+                              │                chords, duration candidates per event
+              ┌───────────────┴────────────────┐
+     omr_constraint_solver             pitch_context_engine
+     (which durations fill the bar)    (pitch from notehead position)
+              │
+     search_engine templates           (what could fill a gap the image missed)
+```
 
 The engines keep their working indexes and event tables in process memory. They do not materialize the full combinatorial pattern space or write a giant TXT file.
 
@@ -106,6 +123,7 @@ All filters are optional unless noted.
 | `first`, `last` | First / last event descriptor | `first=note@2 last=note@4` |
 | `prefix`, `suffix` | Ordered beginning / ending sequence | `prefix=note@2>note@4` |
 | `contains` | Ordered contiguous sequence anywhere in the pattern | `contains=note@2>triplet@8` |
+| `positions` | Allowed descriptors for each event in order (`|` alternatives, `>` next event, `*` anything, `#NRN` a tuplet slot mask); fixes the event count | `positions=note@4>note@2>note@4|note@8` |
 | `limit` | Maximum results returned (1–1000; default 50) | `limit=100` |
 | `offset` | Skip this many matches before returning results | `offset=100` |
 | `max_nodes` | Search work budget (default 200,000; maximum 10,000,000) | `max_nodes=1000000` |
@@ -123,11 +141,11 @@ An event descriptor is usually `kind@denominator`:
 - `tuplet@8:9:8` — nine eighth-note slots in the time normally occupied by eight eighth notes.
 - `measure_rest@0` — full-measure rest, used when the bar length is not one whole note.
 
-The engine pre-generates these common actual:normal ratios: `3:2`, `4:3`, `5:4`, `6:4`, `7:4`, and `9:8`. Other ratios with `3 <= actual <= 12` and `1 <= normal <= 16` are generated on demand when supplied through `tuplet_ratios` or `tuplet_patterns`, including ratios such as `11:8`. The old `triplet@denominator` and `triplet_patterns` interface remains supported. Generic tuplet descriptors include the ratio so different group sizes never collide in exact filters or ordered sequence matching.
+The engine pre-generates these common actual:normal ratios: `3:2`, `4:3`, `5:4`, `6:4`, `7:4`, and `9:8`. Other ratios with `3 <= actual <= 12` and `1 <= normal <= 16` are generated on demand when supplied through `tuplet_ratios`, `tuplet_patterns`, or a tuplet descriptor in `exact`, `first`, `last`, `prefix`, `suffix`, or `contains`, including ratios such as `11:8`. Only `tuplet_ratios` and `tuplet_patterns` restrict results: a ratio named in a descriptor is generated but never widens an explicit `tuplet_ratios` list or excludes other tuplet ratios. The old `triplet@denominator` and `triplet_patterns` interface remains supported. Generic tuplet descriptors include the ratio so different group sizes never collide in exact filters or ordered sequence matching.
 
 For generic tuplets, the JSON result exposes the ratio, every note/rest slot, and each slot's exact duration. For example, `5:4:NNRNN` means note–note–rest–note–note in a five-slot group. The `durations` filter applies to the entire tuplet group; slot duration is returned separately.
 
-The timing grid uses integer ticks scaled to represent the supported tuplet denominators exactly (actual counts up to nine), so no floating-point rounding is used for bar filling.
+The timing grid uses integer ticks (`27720 = lcm(1..12)` ticks per whole note, times the maximum note denominator) to represent the supported tuplet denominators exactly (actual counts up to twelve), so no floating-point rounding is used for bar filling.
 
 ### Example: one half note and two quarter notes in 4/4
 
@@ -181,7 +199,175 @@ This is a bounded depth-first search, not a database containing every possible r
 - If both are false, the search completed and all matches for that query were examined.
 - Exact multiset queries such as `exact=note@2:1,note@4:2` are especially efficient because the engine only explores the specified event inventory.
 
-The search engine currently supports normal notes/rests, single-dotted notes/rests, and triplet groups. Double/triple dots, quintuplets, septuplets, ties, accents, and notation engraving are not implemented yet.
+The legacy `SEARCH`/`GENERATE` vocabulary is flat: notes/rests with at most one dot and tuplet groups whose slots are equal notes or rests. For nested tuplets, mixed values inside tuplets, multiple dots and exact counts use the complete rhythm space below.
+
+## Complete rhythm space (COUNT / GET / PAGE / SAMPLE / PARSE)
+
+`rhythm_space.hpp` defines every notated rhythm of one measure as a grammar:
+
+```
+measure := item+                      (fills the bar exactly)
+item    := note | rest | M | tuplet
+tuplet  := [a:n item+]                content of nominal length a*u sounds as n*u
+```
+
+A tuplet's content is any item sequence, so it can hold mixed values, rests, dots and further tuplets. Examples: `[3:2 n4 n8]`, `[5:4 n16 r16 n8.]` and `[7:4 n16 n16 [3:2 n16 n16 n16] n16 n16 n16]`, a triplet inside a septuplet. "Every possibility" is infinite without limits, so the options below bound the space; inside those limits nothing is missing.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `max_denominator` | startup value | shortest base value (power of two, up to 1024) |
+| `longest` | `2` | longest base value: `1` whole, `2` breve, `4` longa |
+| `max_dots` | `2` | dots per note/rest (0..4) |
+| `depth` | `2` | tuplet nesting depth (0 = no tuplets, up to 4) |
+| `max_actual`, `max_normal` | `12`, `16` | tuplet size limits |
+| `tuplet_normals` | `standard` | `standard`: a:largest power of two below a (3:2, 5:4, 7:4, 9:8 ...) and 2:3, 4:3, 4:6, 8:6 ...; `any`: every n from 1..max_normal |
+| `tuplet_ratios` | — | explicit list such as `3:2,5:6,7:4` (or `none`) |
+| `unit_dots` | `1` | tuplets may be counted in dotted units |
+| `min_tuplet_items` | `2` | `1` also allows a bracket over a single item |
+| `values`, `dots` | all | restrict note/rest values (`4,8,16,B`) and dot counts (`0,1`) |
+| `measure_rest` | `1` | include `M` (whole-bar rest) when the bar is not one whole note |
+| `template=` | — | must be last; consumes the rest of the line |
+
+Notation: `n4` quarter note, `r8.` dotted eighth rest, `n2..` double-dotted half, `nB` breve, `nL` longa, `M` full-measure rest, `[a:n ...]` tuplet (its unit is the content length divided by a, so it is not written).
+
+Commands (categories: `ALL`, `NOTES` = no rest anywhere, `RESTS` = at least one rest):
+
+```text
+COUNT  ALL                                    exact number of patterns (big integer)
+GET    RESTS 123456789123456789               decode one index directly
+PAGE   NOTES 0 100 depth=1 max_dots=1          a page of consecutive patterns
+SAMPLE ALL 10 seed=7                          uniformly random patterns
+COUNT  ALL template=n4 * [3:2 n8 n8 n8]        patterns starting with a quarter, ending with a triplet
+PAGE   ALL 0 50 template=n4. *=1/8 ? r4        known items, a 1/8 gap, exactly one unknown item, a rest
+PARSE  [7:4 n16 n16 [3:2 n16 n16 n16] n16 n16 n16] n4
+```
+
+Template tokens: a concrete item, `?` (exactly one item), `*` (any items, possibly none), `+` (one or more), `*=3/16` (any items lasting exactly 3/16). Wildcards range over the configured space; concrete items may be any valid notation.
+
+Each pattern lists its notation and every note/rest with notated value, exact sounding `duration`, `onset` and enclosing tuplet ratios.
+
+```python
+with SearchEngineClient("./search_engine", 4, 4, 256) as engine:
+    print(engine.count("ALL")["digits"])          # 513-digit count for 4/4 at 1/256
+    print(engine.get(10**200, "RESTS")["notation"])
+    print(engine.page(0, 20, "ALL", template="n4 * r8", depth=1)["patterns"])
+    print(engine.parse("[7:4 n16 n16 [3:2 n16 n16 n16] n16 n16 n16] n4")["events"])
+```
+
+How it works: inside a tuplet, the content is an ordinary sequence measured in notated (nominal) values; only sounding time is scaled by n/a. Counting is therefore a dynamic program per nesting level over nominal ticks, with exact big integers. Decoding an index walks the choices, using exact completion counts, without enumerating earlier patterns. A 4/4 bar at 1/256 with defaults is counted in about 0.05 s; decoding runs at roughly 1000 patterns per second.
+
+Correctness: `tests/rhythm_space_reference.py` is an independent brute-force enumerator of the same grammar. The tests compare the C++ results pattern by pattern (all three categories and template queries) on several small configurations.
+
+Not included: ties, grace notes, multiple voices in one sequence, beaming/spelling variants of the same rhythm, and irrational meters (denominators that are not powers of two).
+
+## STEM-first Engine
+
+`stem_first_engine.cpp` implements the logic of [DrFoxi14/stem](https://github.com/DrFoxi14/stem) on primitives supplied by the Visual Engine. It does not read pixels.
+
+For each stem with real endpoints A and B (no orientation assumed):
+
+| Evidence | Free end | Notehead searched at |
+|---|---|---|
+| flag at A / B | A / B | B / A |
+| beam connected at A / B | A / B | B / A |
+| neither (quarter-note branch) | undetermined | both ends tested; the end with a connected notehead is accepted |
+
+- Stem length is never a rule. Tolerances are multiples of the staff spacing, so short, long or tilted handwritten stems give the same reading.
+- The number of flags or stacked beams at the free end gives the subdivision (1 → 1/8, 2 → 1/16, ...). It never makes the end ambiguous.
+- Without flag or beam, the head fill separates half (hollow) from quarter (filled). An uncertain fill yields both candidates with the fill confidence.
+- Noteheads along the stem form one chord event, anchored at the notehead end. Dots to the right of a head extend the duration. Tuplet brackets (`3`, or explicit `5:6`) scale their members and multiply when nested.
+- Rests come from the dedicated rest recognizer and are only placed on the timeline. Stemless hollow heads are whole notes. A stemless filled head lists every filled-head reading and asks for a stem recheck.
+- Contradictions are reported, never guessed: flag or beam at both ends, noteheads at both ends, a stem without a notehead, a notehead at the free end, a notehead shared by several stems.
+
+Build:
+
+```bash
+clang++ -std=c++17 -O3 -DNDEBUG -Wall -Wextra -Wpedantic stem_first_engine.cpp -o stem_first_engine
+```
+
+Pipeline:
+
+```python
+from stem_first_client import StemFirstClient, read_measure, pitch_inputs
+from omr_constraint_client import OMRConstraintClient
+from pitch_context_client import PitchContextClient
+
+with StemFirstClient("./stem_first_engine") as stem, OMRConstraintClient("./omr_constraint_solver") as solver:
+    measure = read_measure(
+        stem, solver, meter="4/4", spacing=10,
+        stems=[{"id": "s1", "x1": 106, "y1": 120, "x2": 106, "y2": 85}],
+        noteheads=[{"id": "h1", "bbox": {"left": 94, "top": 115, "right": 106, "bottom": 125},
+                    "fill": "unknown", "fill_confidence": 1.0}],
+        rests=[{"id": "r1", "bbox": {"left": 140, "top": 100, "right": 150, "bottom": 125}, "value": 2, "dots": 1}],
+    )
+    print(measure["events"])      # duration resolved by the bar: the unknown head must be a quarter
+
+    notes, stems = pitch_inputs(measure["analysis"], noteheads=[...], stems=[...])
+    # PitchContextClient(...).resolve(..., notes=notes, stems=stems)
+```
+
+### STEM-first order: the stems tell Vision where to look
+
+The stem is the unit; noteheads, dots, rests and pitch are completions. `PLAN` turns the cheapest detections into a search plan before any notehead is looked for:
+
+1. The Visual Engine finds only stems and what touches their ends (flags, beams).
+2. `PLAN` decides, for each stem, the free end and the direction, plus the duration the stem already implies (`durations_before_heads`: 1 beam → 1/8, ..., none → 1/4 or 1/2). It also returns the regions to search:
+   - `notehead`: one box at the notehead end, beside the stem on the side the direction implies. In the quarter-note branch there is one box per end, and exactly one of them should hold the head.
+   - `chord_noteheads`: along the stem, away from the free end.
+   - `augmentation_dots`: right of the head, on its row.
+3. The Visual Engine confirms noteheads and dots only inside those regions, then `ANALYZE` reads the bar as before.
+
+All region sizes are multiples of the staff spacing; the stem's length is never used. Whole notes (no stem) and rests stay with their own detectors.
+
+```python
+from stem_first_client import read_measure_stem_first, in_regions
+
+result = read_measure_stem_first(
+    stem, solver, meter="4/4", spacing=10, stems=stems, flags=flags, beams=beams, rests=rests,
+    detect_heads=lambda regions: vision.find_heads(regions),   # search only these boxes
+    detect_dots=lambda regions: vision.find_dots(regions))
+```
+
+In the end-to-end sweeps every stemmed notehead lies inside its planned region, and reading the bar from those regions alone gives exactly the true durations. On the synthetic layout (one event every four staff spaces, denser than real engraving) the notehead regions cover about 15% of the bar.
+
+### Optimal inference: ask Vision only what the bar does not imply
+
+`infer_measure()` reads a measure from structure alone and asks the Visual Engine only real ambiguities:
+
+1. The Visual Engine reports cheap structure: stems, flags, beams, notehead positions, rests and tuplet brackets. Head fill and augmentation dots are left unchecked (`unchecked=fill,dots`), so a bare stem may be a quarter, a half, or either one dotted.
+2. The solver keeps every reading that fills the bar exactly. Events with one surviving duration are `implied`, and nobody looks at them.
+3. While several readings remain, one check is asked: the head fill or the dot count of one event. With at most 100 readings the order is exactly optimal (minimax over all readings, by iterative deepening). Above 100 readings, or if the exact planner exceeds its budget, the check with the smallest worst case is chosen.
+If a bar is too large for the solver's state budget with features unchecked (hundreds of 1/256 notes), one whole-bar detector pass is requested instead of per-note questions: dots first, then head fill (`batch_checks` in the result).
+4. Pitch follows, from the notehead positions (`pitch_inputs` → `pitch_context_engine`).
+
+```python
+# Three bare stems in 4/4. Vision: "first and last are quarters".
+result = infer_measure(stem, solver, meter="4/4", spacing=10, stems=stems, noteheads=heads,
+                       known={"s0": {"duration": "1/4"}, "s2": {"duration": "1/4"}},
+                       answer=ask_vision)       # never called here
+result["durations"]   # {"s0": "1/4", "s1": "1/2", "s2": "1/4"}  - the half is implied
+result["questions"]   # []
+```
+
+Without the hint the same bar has 6 readings ((¼ ¼ ½) and (¼ ⅜ ⅜) in any order). No single check splits them 3/3, so the guaranteed minimum is 4 checks; the exact planner achieves it for every possible truth.
+
+Deductions are exact relative to the unchecked range. `unchecked_max_dots` defaults to 2: with 1, a double-dotted half plus a quarter in 9/8 would be "deduced" as a dotted half plus a dotted quarter. If the Visual Engine reports more dots than assumed, the range widens automatically.
+
+The solver accepts any exact rational duration: its grid is the lcm of every candidate denominator, so a 13-tuplet or a 9-tuplet inside a 9-tuplet are exact. Each event also reports `solution_counts` (how many valid readings use each candidate) and `determined`. Exact counts are 64-bit; `valid_assignments_log2` and `solution_counts_log2` carry the same counts as log2 and never saturate (a 2/2 bar of 524 events at 1/256 has about 2^309 readings). DP states are stored in compact sorted layers, and the ranked solution list has a memory budget: when it binds, fewer than `limit` solutions are returned and `solutions_limited_by_memory` is true.
+
+### End-to-end testing over the rhythm space
+
+`tests/score_renderer.py` draws any rhythm of the complete space as Visual Engine primitives. It uses varied pitches and stem directions, flags or beams with partial beams, dots, rests, nested tuplet brackets and occasional chords. `tests/pipeline_sweep.py` then reads every bar back twice:
+
+- with full evidence, STEM-first + solver must return exactly the true durations;
+- with fill and dots unchecked, the truth must stay possible, implied events must be correct, and the question loop must reach the truth without asking about implied events or repeating a check.
+
+```bash
+python3 tests/pipeline_sweep.py build 2/4 16 "longest=1 max_dots=1 depth=0" all   # every bar
+python3 tests/pipeline_sweep.py build 4/4 32 "" sample 300                        # uniform sample
+```
+
+Input elements: `stem {id,x1,y1,x2,y2}`, `notehead {id,bbox,fill,fill_confidence}`, `flag {id,bbox,count}`, `beam {id,x1,y1,x2,y2,thickness}`, `dot {id,x,y,confidence}`, `rest {id,bbox,value,dots}` with `value` a power of two, `"B"` or `"measure"`, and `tuplet {id,number,normal,members}`. Each request is one voice of one measure.
 
 
 ## OMR Constraint Solver
@@ -221,16 +407,26 @@ with OMRConstraintClient("./omr_constraint_solver") as solver:
 
 The example resolves the last note to a quarter note because the other candidates do not fill the 4/4 measure. Candidate confidence only ranks valid solutions; it never overrides the exact duration constraint.
 
+The solver uses an exact dynamic program over (event index, elapsed ticks) instead of enumerating candidate combinations. Its cost grows with the number of distinct onset positions, so dense measures with many ambiguous events (for example 24 events with three candidates each) are counted and resolved exactly. `valid_assignments` is the exact number of valid readings (`valid_assignments_is_lower_bound` is true only if the count exceeds 64-bit range), every candidate is classified as supported or eliminated, and `solutions` holds the `limit` best readings by visual log-score. `max_nodes` bounds the number of DP states; exceeding it yields `incomplete`.
+
+Durations are exact fractions. The grid starts from 27720 ticks per whole note (lcm of 1..12, the Search Engine grid) times the maximum note denominator, and is extended by the lcm of every candidate denominator, so any rational duration is exact: a 13-tuplet slot, or nested tuplets such as 9 inside 9 (`1/81`). Only durations whose common grid would overflow are rejected.
+
+A candidate may also be `{"duration": "none"}`: the Visual Engine is not sure the symbol exists at all (a duplicated or spurious notehead). It occupies no time; a solution that drops it reports `"present": false` for that event and suggests the `symbol_existence` check.
+
+When no assignment fills the measure, the result says why: `gap` is `missing` (even the longest candidates leave `gap_whole` unfilled: a symbol was probably missed), `excess` (even the shortest candidates overflow by `gap_whole`: a spurious symbol or a missed barline), or `no_exact_combination`. `min_total_whole` and `max_total_whole` are always reported.
+
+Beam groups are an optional preference: pass `beat="1/4"` (or `"3/8"` in compound meters) and `groups=[["n2", "n3"], ...]`, lists of consecutive events under one beam. Engraving starts and ends a beamed group on a beat, so each group edge that falls off the beat multiplies the visual score by `group_penalty` (default 0.2). This tells apart solutions that fill the measure equally well, e.g. which eighth of a measure is really the sixteenth whose short beam was missed. Protocol tokens: `beat=1/4 group_penalty=0.2 group=n2,n3`.
+
 Statuses:
 
 - `resolved_unique` — exactly one valid assignment was found and the search completed.
 - `ambiguous` — multiple valid assignments remain.
 - `inconsistent` — no assignment satisfies the supplied candidates and measure.
-- `incomplete` — the node budget was reached; uniqueness cannot be claimed.
+- `incomplete` — the DP state budget (`max_nodes`) was reached; uniqueness cannot be claimed.
 
 The solver returns exact onset positions, candidate support/elimination per event, and suggested visual checks. The Python client attaches caller-provided bounding boxes to those guidance records.
 
-**Scope limitation:** version 1 handles one ordered monophonic voice/part in one measure. It must be called separately for each voice. Polyphonic SATB alignment, pickup measures, ties across barlines, tuplets beyond supplied effective durations, and cross-measure constraints require later extensions. Musical validity is not proof that the visual candidate list is correct: if the Visual Engine omitted the true candidate, the solver can report `inconsistent`, but cannot reconstruct missing pixel evidence.
+**Scope limitation:** version 1 handles one ordered monophonic voice/part in one measure. It must be called separately for each voice. Polyphonic SATB alignment, pickup measures, ties across barlines, tuplet grouping beyond supplied effective slot durations, and cross-measure constraints require later extensions. Musical validity is not proof that the visual candidate list is correct: if the Visual Engine omitted the true candidate, the solver can report `inconsistent`, but cannot reconstruct missing pixel evidence.
 
 
 ## Pitch Context Engine (Y-axis / pitch reasoning)
@@ -323,7 +519,7 @@ with PitchContextClient("./pitch_context_engine") as engine:
 
 ### Accidental-to-note assignment
 
-Accidental association uses page geometry, not harmony as a hard rule. Candidate noteheads must be to the right of the accidental glyph and within a staff-spacing-based vertical/horizontal window. Candidates are ranked by vertical anchor distance, with horizontal distance as a weaker tie-breaker. If the Visual Engine can estimate the symbol's musical anchor independently of its bounding-box center (for example, the bulb/center topology of a flat or the center of a natural), pass it as `anchor_y`.
+Accidental association uses page geometry, not harmony as a hard rule. Candidate noteheads must be to the right of the accidental glyph and within a staff-spacing-based vertical/horizontal window. An accidental is engraved right before its note: a candidate further right is blocked by a candidate at least half a space nearer on the same (or a closer) row, so a repeated note just after an altered note is never a competing candidate. Members of one chord (same `chord_id` or `stem_id`) never block each other, because chord heads are displaced around a shared stem and all their accidentals stand left of the chord. Candidates are ranked by vertical anchor distance, with horizontal distance as a weaker tie-breaker. If the Visual Engine can estimate the symbol's musical anchor independently of its bounding-box center (for example, the bulb/center topology of a flat or the center of a natural), pass it as `anchor_y`.
 
 - A clear geometric winner is assigned.
 - If two noteheads have similar geometric scores (for example, the accidental glyph overlaps two staff positions), the result is `ambiguous`; both candidate noteheads are returned for visual reinspection.
@@ -331,6 +527,8 @@ Accidental association uses page geometry, not harmony as a hard rule. Candidate
 - The engine never assigns an accidental merely because doing so would make a chord more consonant.
 
 A new `resolve()` request represents a new measure and starts with an empty local accidental register. Within a measure, a uniquely assigned accidental affects subsequent occurrences of the same letter and octave. Key-signature defaults apply when no local accidental is active.
+
+If an accidental is `ambiguous`, every candidate letter/octave becomes uncertain for the rest of the measure: later notes of that pitch report `pitch_certain=false`, `alteration_source="ambiguous_accidental_memory"`, and include the ambiguous glyph's alteration in `effective_alteration_options`. A later uniquely assigned accidental on the same letter/octave clears that uncertainty.
 
 ### Cross-barline ties
 

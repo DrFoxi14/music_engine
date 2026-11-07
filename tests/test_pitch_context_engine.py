@@ -419,6 +419,78 @@ class PitchContextEngineTests(unittest.TestCase):
         self.assertEqual((pitch["letter"], pitch["octave"]), ("G", 2))
         self.assertEqual(pitch["midi_pitch"], 43)
 
+    def test_accidental_does_not_skip_to_nearby_repeated_note(self):
+        # F#5 followed by two closely spaced F5 repetitions: the sharp belongs
+        # to the first notehead and carries through the measure.
+        result = self.resolve(
+            [note("f1", 200, 100), note("f2", 230, 100), note("f3", 260, 100)],
+            accidentals=[{
+                "id": "sharp1", "kind": "sharp",
+                "bbox": {"left": 176, "top": 90, "right": 188, "bottom": 110},
+            }],
+        )
+        association = result["accidental_associations"][0]
+        self.assertEqual(association["status"], "associated")
+        self.assertEqual(association["selected_note_id"], "f1")
+        self.assertEqual([c["note_id"] for c in association["candidates"]], ["f1"])
+        pitches = {p["id"]: p for p in result["notes"]}
+        for note_id in ("f1", "f2", "f3"):
+            self.assertEqual(pitches[note_id]["effective_alteration"], 1)
+            self.assertTrue(pitches[note_id]["pitch_certain"])
+        self.assertEqual(pitches["f1"]["alteration_source"], "local_accidental")
+        self.assertEqual(pitches["f2"]["alteration_source"], "measure_local_memory")
+        self.assertEqual(result["status"], "resolved")
+
+    def test_accidental_keeps_chord_members_as_candidates(self):
+        # Chord noteheads displaced around a shared stem remain candidates
+        # even when they are farther right than the nearest chord member.
+        result = self.resolve(
+            [note("a4", 200, 125, stem="s1", chord="c1"),
+             note("b4", 218, 120, stem="s1", chord="c1")],
+            accidentals=[{
+                "id": "sharp1", "kind": "sharp",
+                "bbox": {"left": 170, "top": 118, "right": 182, "bottom": 127},
+            }],
+        )
+        association = result["accidental_associations"][0]
+        self.assertEqual({c["note_id"] for c in association["candidates"]}, {"a4", "b4"})
+        self.assertEqual(association["status"], "ambiguous")
+
+    def test_ambiguous_accidental_makes_later_same_pitch_notes_uncertain(self):
+        result = self.resolve(
+            [note("b4", 200, 120), note("a4", 200, 125),
+             note("b4_later", 300, 120), note("a4_later", 330, 125), note("c5", 360, 115)],
+            accidentals=[{
+                "id": "uncertain_sharp", "kind": "sharp",
+                "bbox": {"left": 170, "top": 118, "right": 182, "bottom": 127},
+            }],
+        )
+        self.assertEqual(result["accidental_associations"][0]["status"], "ambiguous")
+        pitches = {p["id"]: p for p in result["notes"]}
+        for note_id in ("b4_later", "a4_later"):
+            self.assertFalse(pitches[note_id]["pitch_certain"])
+            self.assertEqual(pitches[note_id]["alteration_source"], "ambiguous_accidental_memory")
+            self.assertEqual(pitches[note_id]["effective_alteration_options"], [0, 1])
+        self.assertTrue(pitches["c5"]["pitch_certain"])
+        self.assertEqual(pitches["c5"]["effective_alteration_options"], [0])
+
+    def test_unique_accidental_clears_ambiguous_memory(self):
+        result = self.resolve(
+            [note("b4", 200, 120), note("a4", 200, 125),
+             note("b4_natural", 300, 120), note("b4_after", 400, 120)],
+            accidentals=[
+                {"id": "uncertain_sharp", "kind": "sharp",
+                 "bbox": {"left": 170, "top": 118, "right": 182, "bottom": 127}},
+                {"id": "natural1", "kind": "natural",
+                 "bbox": {"left": 274, "top": 114, "right": 286, "bottom": 126}},
+            ],
+        )
+        pitches = {p["id"]: p for p in result["notes"]}
+        self.assertEqual(pitches["b4_natural"]["effective_alteration"], 0)
+        self.assertTrue(pitches["b4_natural"]["pitch_certain"])
+        self.assertEqual(pitches["b4_after"]["alteration_source"], "measure_local_memory")
+        self.assertTrue(pitches["b4_after"]["pitch_certain"])
+
 
 if __name__ == "__main__":
     unittest.main()

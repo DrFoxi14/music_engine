@@ -466,6 +466,36 @@ Association associateAccidental(size_t accidentalIndex, const StaffConfig& cfg,
         if (std::isfinite(cost)) result.candidates.push_back({i, cost});
     }
 
+    // An accidental is engraved right before its note: a candidate further right on (nearly) the same
+    // staff position is blocked by a nearer candidate there; that later note is in the accidental's
+    // measure-local scope, not its owner. (Without this, a flat 4 px from its note and the same pitch
+    // 38 px further were "ambiguous", and neither note got the flat.)
+    auto gapOf = [&](size_t i) {
+        return (notes[i].box.valid ? notes[i].box.left : notes[i].x) - accidental.box.right;
+    };
+    auto rowOf = [&](size_t i) { return std::abs(notes[i].y - accidental.verticalAnchor()); };
+    std::vector<AssociationCandidate> unblocked;
+    // Members of one chord (same chord_id or stem_id) never block each other: chord heads are
+    // displaced around a shared stem and all their accidentals stand left of the chord, so
+    // horizontal distance says nothing about which head an accidental belongs to.
+    auto sameChord = [&](size_t a, size_t b) {
+        return (!notes[a].chordId.empty() && notes[a].chordId == notes[b].chordId) ||
+               (!notes[a].stemId.empty() && notes[a].stemId == notes[b].stemId);
+    };
+    for (const auto& c : result.candidates) {
+        bool blocked = false;
+        for (const auto& o : result.candidates) {
+            if (o.noteIndex != c.noteIndex && !sameChord(o.noteIndex, c.noteIndex) &&
+                gapOf(o.noteIndex) + 0.5 * cfg.spacing < gapOf(c.noteIndex) &&
+                rowOf(o.noteIndex) <= rowOf(c.noteIndex) + 0.25 * cfg.spacing) {
+                blocked = true;
+                break;
+            }
+        }
+        if (!blocked) unblocked.push_back(c);
+    }
+    result.candidates = std::move(unblocked);
+
     std::stable_sort(result.candidates.begin(), result.candidates.end(),
         [](const AssociationCandidate& a, const AssociationCandidate& b) {
             return a.cost < b.cost;
@@ -647,6 +677,12 @@ public:
         // Accidental state is measure-local. Tie carries are separate and
         // persist across consecutive RESOLVE requests for the same staff/voice.
         std::map<std::string, int> localAccidentalRegister;
+        // Pitch keys whose measure-local state became uncertain because an
+        // ambiguous accidental may apply to them. Values are the alterations
+        // the ambiguous glyph(s) could have introduced. A later unique
+        // accidental on the same letter/octave clears the uncertainty.
+        std::map<std::string, std::set<int>> uncertainRegister;
+        std::vector<std::set<int>> alterationOptions(notes.size());
         std::vector<int> resolvedAlteration(notes.size(), 0);
         std::vector<bool> alterationCertain(notes.size(), true);
         std::vector<std::string> alterationSource(notes.size(), "key_signature");
@@ -753,6 +789,7 @@ public:
                 }
                 const size_t ai = found->second.front();
                 localAccidentalRegister[key] = accidentalValue(accidentals[ai].kind);
+                uncertainRegister.erase(key);
                 alterationSource[noteIndex] = "local_accidental";
             }
 
@@ -775,12 +812,27 @@ public:
                     alterationSource[noteIndex] = "tie_carry";
                 }
                 resolvedAlteration[noteIndex] = alteration;
+                alterationOptions[noteIndex].insert(alteration);
                 if (local != localAccidentalRegister.end() &&
                     alterationSource[noteIndex] == "key_signature") {
                     alterationSource[noteIndex] = "measure_local_memory";
                 }
 
+                // An earlier ambiguous accidental may have changed this
+                // letter/octave for the rest of the measure.
+                auto uncertain = uncertainRegister.find(keyName);
+                if (uncertain != uncertainRegister.end() &&
+                    alterationSource[noteIndex] != "tie_carry" &&
+                    alterationSource[noteIndex] != "local_accidental" &&
+                    alterationSource[noteIndex] != "conflicting_accidentals") {
+                    alterationCertain[noteIndex] = false;
+                    alterationSource[noteIndex] = "ambiguous_accidental_memory";
+                    alterationOptions[noteIndex].insert(uncertain->second.begin(), uncertain->second.end());
+                }
+
                 if (!ambiguousAccidentals[noteIndex].empty()) {
+                    for (size_t accidentalIndex : ambiguousAccidentals[noteIndex])
+                        alterationOptions[noteIndex].insert(accidentalValue(accidentals[accidentalIndex].kind));
                     alterationCertain[noteIndex] = false;
                     if (tieResults[noteIndex].status == "continued" ||
                         tieResults[noteIndex].status == "continued_with_cautionary_accidental") {
@@ -805,6 +857,17 @@ public:
                     if (alterationSource[noteIndex] == "key_signature")
                         alterationSource[noteIndex] = "staff_position_unquantized";
                 }
+            }
+
+            // From the next onset onward, every candidate pitch of an
+            // ambiguous accidental has uncertain measure-local state.
+            for (size_t p = cursor; p < end; ++p) {
+                const size_t noteIndex = noteOrder[p];
+                auto amb = ambiguousAccidentals.find(noteIndex);
+                if (amb == ambiguousAccidentals.end() || amb->second.empty()) continue;
+                const std::string keyName = pitchKey(positions[noteIndex].letter, positions[noteIndex].octave);
+                for (size_t accidentalIndex : amb->second)
+                    uncertainRegister[keyName].insert(accidentalValue(accidentals[accidentalIndex].kind));
             }
             cursor = end;
         }
@@ -880,7 +943,7 @@ public:
                  stemChecks, missingStemNotes, multipleStemChords,
                  tieResults, tieEvents,
                  resolvedAlteration, alterationCertain, alterationSource,
-                 attachedAccidentals, ambiguousAccidentals, reviewRequired);
+                 attachedAccidentals, ambiguousAccidentals, alterationOptions, reviewRequired);
     }
 
 private:
@@ -902,8 +965,10 @@ private:
                   const std::vector<std::string>& alterationSource,
                   const std::unordered_map<size_t, std::vector<size_t>>& attached,
                   const std::unordered_map<size_t, std::vector<size_t>>& ambiguous,
+                  const std::vector<std::set<int>>& alterationOptionsByNote,
                   bool reviewRequired) const {
         (void)key;
+        (void)stems;
         struct ChordFlag {
             std::string chordId;
             size_t noteA;
@@ -971,11 +1036,8 @@ private:
                 }
             }
             out << "],\"effective_alteration_options\":[";
-            std::set<int> alterationOptions{alterations[i]};
-            if (amb != ambiguous.end()) {
-                for (size_t accidentalIndex : amb->second)
-                    alterationOptions.insert(accidentalValue(accidentals[accidentalIndex].kind));
-            }
+            std::set<int> alterationOptions = alterationOptionsByNote[i];
+            alterationOptions.insert(alterations[i]);
             size_t optionIndex = 0;
             for (int option : alterationOptions) {
                 if (optionIndex++) out << ',';

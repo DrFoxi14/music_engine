@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "rhythm_space.hpp"
+
 /*
  * Music Engine — filtered search and pattern generation (C++17).
  *
@@ -143,7 +145,7 @@ std::string descriptor(const std::string& raw) {
         if (den == 0 || den > 256 || !isPowerOfTwo(static_cast<int>(den)))
             throw std::invalid_argument("tuplet denominator must be a power of two <= 256");
         if (actual < 3 || actual > 12 || normal < 1 || normal > 16)
-            throw std::invalid_argument("tuplet counts must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
+            throw std::invalid_argument("tuplet counts must satisfy 3 <= actual <= 12 and 1 <= normal <= 16");
         if (actual == 3 && normal == 2)
             return "triplet@" + std::to_string(den); // Generic 3:2 spelling aliases to legacy triplet.
         return "tuplet@" + std::to_string(den) + ":" + std::to_string(actual) + ":" + std::to_string(normal);
@@ -182,7 +184,8 @@ struct Filter {
     std::set<std::string> durations;
     std::set<std::string> tripletPatterns;
     std::set<std::string> tupletPatterns;
-    std::set<std::string> tupletRatios;
+    std::set<std::string> tupletRatios;   // Explicit caller restriction (tuplet_ratios / tuplet_patterns).
+    std::set<std::string> generateRatios; // Ratios to generate on demand; never restricts results.
     std::set<std::string> kinds;
     std::set<int> denominators;
     std::map<std::string, int> exact;
@@ -191,6 +194,10 @@ struct Filter {
     std::vector<std::string> prefix;
     std::vector<std::string> suffix;
     std::vector<std::string> contains;
+    // positions: for event i, the descriptors it may be ("*" = anything). A tuplet alternative may
+    // carry its slot mask, "triplet@8#NRN". This is how an OMR adapter states what is visually
+    // certain and what is not, symbol by symbol; the pattern then has exactly this many events.
+    std::vector<std::vector<std::string>> positions;
 };
 
 void parseSequence(const std::string& value, std::vector<std::string>& dest) {
@@ -306,8 +313,9 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
             const uint64_t actual = parseU64(parts[0], "tuplet actual count");
             const uint64_t normal = parseU64(parts[1], "tuplet normal count");
             if (actual < 3 || actual > 12 || normal < 1 || normal > 16)
-                throw std::invalid_argument("tuplet ratio must satisfy 3 <= actual <= 9 and 1 <= normal <= 16");
+                throw std::invalid_argument("tuplet ratio must satisfy 3 <= actual <= 12 and 1 <= normal <= 16");
             f.tupletRatios.insert(std::to_string(actual) + ":" + std::to_string(normal));
+            f.generateRatios.insert(std::to_string(actual) + ":" + std::to_string(normal));
         }
     }
     if (auto it = args.find("tuplet_patterns"); it != args.end()) {
@@ -322,6 +330,7 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
                 throw std::invalid_argument("tuplet pattern ratio out of range");
             const std::string ratio = std::to_string(actual) + ":" + std::to_string(normal);
             f.tupletRatios.insert(ratio);
+            f.generateRatios.insert(ratio);
             f.tupletPatterns.insert(ratio + ":" + parts[2]);
         }
     }
@@ -330,6 +339,30 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
     if (auto it = args.find("prefix"); it != args.end()) parseSequence(it->second, f.prefix);
     if (auto it = args.find("suffix"); it != args.end()) parseSequence(it->second, f.suffix);
     if (auto it = args.find("contains"); it != args.end()) parseSequence(it->second, f.contains);
+    if (auto it = args.find("positions"); it != args.end()) {
+        for (const auto& position : split(it->second, '>')) {
+            std::vector<std::string> alternatives;
+            for (const auto& raw : split(position, '|')) {
+                if (raw == "*") { alternatives.push_back(raw); continue; }
+                const size_t hash = raw.find('#');
+                std::string item = descriptor(raw.substr(0, hash));
+                if (hash != std::string::npos) {
+                    const std::string mask = upper(raw.substr(hash + 1));
+                    if (mask.empty() || mask.find_first_not_of("NR") != std::string::npos)
+                        throw std::invalid_argument("a positions mask uses N/R, e.g. triplet@8#NRN");
+                    item += "#" + mask;
+                }
+                alternatives.push_back(item);
+            }
+            if (alternatives.empty()) throw std::invalid_argument("each position needs at least one descriptor or *");
+            f.positions.push_back(alternatives);
+        }
+        if (f.positions.size() > 2048) throw std::invalid_argument("at most 2048 positions");
+        const int n = static_cast<int>(f.positions.size());
+        if (f.minEvents > n || f.maxEvents < n)
+            throw std::invalid_argument("positions fixes the event count; min_events/max_events contradict it");
+        f.minEvents = f.maxEvents = n;
+    }
 
     static const std::set<std::string> supported{
         "limit", "offset", "max_nodes", "min_events", "max_events",
@@ -338,18 +371,20 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
         "min_event_ticks", "max_event_ticks", "durations", "triplet_patterns",
         "tuplet_patterns", "tuplet_ratios",
         "kinds", "denominators", "subdivisions", "exact",
-        "first", "last", "prefix", "suffix", "contains"
+        "first", "last", "prefix", "suffix", "contains", "positions"
     };
     for (const auto& pair : args)
         if (!supported.count(pair.first)) throw std::invalid_argument("unknown filter: " + pair.first);
 
     // Sequence and exact descriptors can request uncommon ratios too; infer
-    // their ratios so SearchEngine generates the necessary candidates.
+    // their ratios so SearchEngine generates the necessary candidates. These
+    // inferred ratios only drive generation: they must never widen an explicit
+    // tuplet_ratios restriction, nor restrict other tuplets when none was given.
     auto registerDescriptorRatio = [&](const std::string& value) {
         if (value.rfind("tuplet@", 0) != 0) return;
         const auto fields = split(value.substr(value.find('@') + 1), ':');
         if (fields.size() == 3)
-            f.tupletRatios.insert(fields[1] + ":" + fields[2]);
+            f.generateRatios.insert(fields[1] + ":" + fields[2]);
     };
     for (const auto& item : f.exact) registerDescriptorRatio(item.first);
     registerDescriptorRatio(f.first);
@@ -357,6 +392,8 @@ Filter parseFilter(const std::vector<std::string>& tokens, const std::string& ca
     for (const auto& item : f.prefix) registerDescriptorRatio(item);
     for (const auto& item : f.suffix) registerDescriptorRatio(item);
     for (const auto& item : f.contains) registerDescriptorRatio(item);
+    for (const auto& position : f.positions)
+        for (const auto& item : position) registerDescriptorRatio(item.substr(0, item.find('#')));
     return f;
 }
 
@@ -407,7 +444,7 @@ public:
                                         std::to_string(event.normalCount));
             }
         }
-        for (const auto& ratio : filter.tupletRatios) {
+        for (const auto& ratio : filter.generateRatios) {
             if (availableRatios.count(ratio)) continue;
             const auto parts = split(ratio, ':');
             const int actual = static_cast<int>(parseU64(parts.at(0), "tuplet actual count"));
@@ -455,8 +492,9 @@ private:
                     notes += isNote ? 1 : 0;
                 }
                 const int rests = actual - notes;
+                // RESTS patterns need at least one rest somewhere in the bar,
+                // not inside every tuplet: all-note tuplets stay available.
                 if (!includeRests && rests > 0) continue;
-                if (includeRests && rests == 0) continue;
                 if (!requestedMasks.empty() && !requestedMasks.count(maskText)) continue;
 
                 std::ostringstream label;
@@ -512,7 +550,6 @@ private:
                         notes += isNote ? 1 : 0;
                     }
                     const int rests = actual - notes;
-                    if (includeRests && rests == 0) continue;
                     std::ostringstream label;
                     const bool isTriplet = actual == 3 && normal == 2;
                     if (isTriplet) label << "triplet(";
@@ -581,6 +618,13 @@ private:
                 maxTicks_ = std::max(maxTicks_, event.ticks);
             }
             if (f_.minRestSlots == 0 && category_ == "RESTS") f_.minRestSlots = 1;
+            // positions: the candidates of each event are known in advance, so each depth of the search
+            // walks only its own short list instead of the whole vocabulary (thousands of tuplet masks)
+            for (size_t i = 0; i < f_.positions.size(); ++i) {
+                byPosition_.emplace_back();
+                for (const Event* event : allowed_)
+                    if (matchesPosition(*event, i)) byPosition_.back().push_back(event);
+            }
             if (!f_.exact.empty()) {
                 exactTicks_ = 0;
                 exactEvents_ = 0;
@@ -616,6 +660,7 @@ private:
         std::string category_;
         Filter f_;
         std::vector<const Event*> allowed_;
+        std::vector<std::vector<const Event*>> byPosition_;
         std::map<std::string,int> remainingExact_;
         uint64_t exactTicks_ = 0;
         int exactEvents_ = 0;
@@ -740,7 +785,25 @@ private:
                 if (it == remainingExact_.end() || it->second <= 0) return false;
             }
             if (chosen_.empty() && !f_.first.empty() && event.key() != f_.first) return false;
+            // Prune by prefix while it is being built instead of only at leaves.
+            if (chosen_.size() < f_.prefix.size() && event.key() != f_.prefix[chosen_.size()]) return false;
+            if (!f_.positions.empty() && chosen_.size() >= f_.positions.size()) return false;
             return true;
+        }
+
+        bool matchesPosition(const Event& event, size_t position) const {
+            for (const auto& item : f_.positions[position]) {
+                if (item == "*") return true;
+                const size_t hash = item.find('#');
+                const std::string key = event.key();
+                if (item.compare(0, hash, key) != 0 || (hash == std::string::npos && item.size() != key.size()))
+                    continue;
+                if (hash == std::string::npos) return true;
+                std::string mask;
+                for (bool slot : event.tupletSlots) mask += slot ? 'N' : 'R';
+                if (item.substr(hash + 1) == mask) return true;
+            }
+            return false;
         }
 
         bool sequenceAtEnd(const std::vector<std::string>& seq, bool suffix) const {
@@ -844,7 +907,8 @@ private:
                 return;
             }
 
-            for (const Event* event : allowed_) {
+            const std::vector<const Event*>& pool = f_.positions.empty() ? allowed_ : byPosition_[chosen_.size()];
+            for (const Event* event : pool) {
                 if (stopped_) break;
                 if (event->ticks > remainingTicks || !eventAllowed(*event)) continue;
                 if (event->kind == "triplet" && triplets >= f_.maxTriplets) continue;
@@ -890,6 +954,119 @@ void emitError(const std::string& message) {
     std::cout << "{\"type\":\"error\",\"message\":\"" << jsonEscape(message) << "\"}\n" << std::flush;
 }
 
+// ---------------------------------------------------------------------------
+// Complete rhythm space commands (see rhythm_space.hpp):
+//   COUNT  ALL|NOTES|RESTS [options] [template=...]
+//   GET    ALL|NOTES|RESTS <index> [options] [template=...]
+//   PAGE   ALL|NOTES|RESTS <start> <limit> [options] [template=...]
+//   SAMPLE ALL|NOTES|RESTS <n> [seed=N] [options] [template=...]
+//   PARSE  [options] <notation>
+// ---------------------------------------------------------------------------
+class SpaceCommands {
+public:
+    SpaceCommands(int numerator, int denominator, int maxDenominator)
+        : numerator_(numerator), denominator_(denominator), maxDenominator_(maxDenominator) {}
+
+    bool handles(const std::string& command) const {
+        return command == "COUNT" || command == "GET" || command == "PAGE" ||
+               command == "SAMPLE" || command == "PARSE";
+    }
+
+    void run(const std::string& command, std::istringstream& input) {
+        std::vector<std::string> args;
+        std::string token;
+        while (input >> token) args.push_back(token);
+
+        if (command == "PARSE") { parse(args); return; }
+        if (args.empty()) throw std::invalid_argument(command + " requires a category: ALL, NOTES or RESTS");
+        const rhythm_space::Category category = rhythm_space::parseCategory(args[0]);
+        size_t positional = command == "COUNT" ? 0 : (command == "PAGE" ? 2 : 1);
+        if (args.size() < 1 + positional) throw std::invalid_argument(command + " is missing arguments");
+        const std::vector<std::string> pos(args.begin() + 1, args.begin() + 1 + static_cast<long>(positional));
+        const std::vector<std::string> options(args.begin() + 1 + static_cast<long>(positional), args.end());
+
+        const rhythm_space::Request req =
+            rhythm_space::parseRequest(options, numerator_, denominator_, maxDenominator_);
+        auto space = cache_.get(req.config);
+        std::vector<rhythm_space::Token> tokens;
+        if (!req.templateText.empty())
+            tokens = rhythm_space::NotationParser(*space, req.templateText).parseTemplate();
+        const rhythm_space::Query query(space, tokens);
+        const rhythm_space::Count total = query.total();
+        const rhythm_space::BigUInt selected = rhythm_space::selectCount(total, category);
+
+        if (command == "COUNT") {
+            std::cout << "{\"type\":\"count\",\"category\":\"" << rhythm_space::categoryName(category)
+                      << "\",\"count\":\"" << selected.str() << "\",\"all\":\"" << total.all.str()
+                      << "\",\"notes_only\":\"" << total.quiet.str()
+                      << "\",\"with_rests\":\"" << (total.all - total.quiet).str()
+                      << "\",\"digits\":" << selected.str().size()
+                      << ",\"template\":\"" << jsonEscape(req.templateText)
+                      << "\",\"config\":" << rhythm_space::configJson(*space) << "}\n";
+        } else if (command == "GET") {
+            const rhythm_space::BigUInt index = rhythm_space::BigUInt::parse(pos[0]);
+            if (!(index < selected)) throw std::invalid_argument("index out of range; COUNT gives " + selected.str());
+            emitPattern(*space, query, category, index);
+        } else if (command == "PAGE") {
+            rhythm_space::BigUInt index = rhythm_space::BigUInt::parse(pos[0]);
+            const int limit = rhythm_space::parseInt(pos[1], "limit");
+            if (limit < 1 || limit > 1000) throw std::invalid_argument("PAGE limit must be 1..1000");
+            int returned = 0;
+            for (; returned < limit && index < selected; ++returned) {
+                emitPattern(*space, query, category, index);
+                index += rhythm_space::BigUInt(1);
+            }
+            std::cout << "{\"type\":\"page_end\",\"category\":\"" << rhythm_space::categoryName(category)
+                      << "\",\"returned\":" << returned << ",\"total\":\"" << selected.str()
+                      << "\",\"has_more\":" << (index < selected ? "true" : "false") << "}\n";
+        } else if (command == "SAMPLE") {
+            const int n = rhythm_space::parseInt(pos[0], "sample size");
+            if (n < 1 || n > 1000) throw std::invalid_argument("SAMPLE size must be 1..1000");
+            if (selected.isZero()) throw std::invalid_argument("no pattern matches; nothing to sample");
+            std::mt19937_64 rng(req.seed);
+            for (int i = 0; i < n; ++i)
+                emitPattern(*space, query, category, rhythm_space::BigUInt::randomBelow(selected, rng));
+            std::cout << "{\"type\":\"sample_end\",\"returned\":" << n << ",\"total\":\"" << selected.str() << "\"}\n";
+        }
+        std::cout << std::flush;
+    }
+
+private:
+    int numerator_;
+    int denominator_;
+    int maxDenominator_;
+    rhythm_space::SpaceCache cache_;
+
+    void emitPattern(const rhythm_space::Space& space, const rhythm_space::Query& query,
+                     rhythm_space::Category category, const rhythm_space::BigUInt& index) {
+        const auto nodes = query.decode(category, index);
+        const std::string head = std::string(",\"category\":\"") + rhythm_space::categoryName(category) +
+                                 "\",\"index\":\"" + index.str() + "\"";
+        std::cout << rhythm_space::patternJson(space, nodes, head) << '\n';
+    }
+
+    void parse(const std::vector<std::string>& args) {
+        std::vector<std::string> options;
+        std::string text;
+        for (const auto& a : args) {
+            if (text.empty() && a.find('=') != std::string::npos) options.push_back(a);
+            else text += (text.empty() ? "" : " ") + a;
+        }
+        rhythm_space::Request req = rhythm_space::parseRequest(options, numerator_, denominator_, maxDenominator_);
+        // PARSE validates notation on the finest grid unless told otherwise.
+        if (!req.raw.count("max_dots")) req.config.maxDots = 4;
+        if (!req.raw.count("max_denominator")) req.config.maxDenominator = 1024;
+        req.config.depth = 0; // PARSE only needs the grid, not the counting tables
+        auto space = cache_.get(req.config);
+        const auto nodes = rhythm_space::NotationParser(*space, text).parseSequence();
+        uint64_t nominal = 0;
+        for (const auto& node : nodes) nominal += node.span;
+        const std::string head = std::string(",\"source\":\"parse\",\"fills_measure\":") +
+                                 (nominal == space->measureTicks() ? "true" : "false");
+        std::cout << rhythm_space::patternJson(*space, nodes, head) << '\n' << std::flush;
+    }
+};
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -905,6 +1082,7 @@ int main(int argc, char** argv) {
         }
 
         SearchEngine engine(numerator, denominator, maxDenominator);
+        SpaceCommands space(numerator, denominator, maxDenominator);
         std::cout << engine.readyJson() << '\n' << std::flush;
         std::string line;
         while (std::getline(std::cin, line)) {
@@ -920,7 +1098,15 @@ int main(int argc, char** argv) {
                           << "\"min_triplets\",\"max_triplets\",\"min_dotted\",\"max_dotted\","
                           << "\"min_rest_slots\",\"max_rest_slots\",\"min_note_slots\",\"max_note_slots\","
                           << "\"min_event_ticks\",\"max_event_ticks\",\"durations\",\"triplet_patterns\",\"tuplet_patterns\",\"tuplet_ratios\",\"kinds\",\"denominators\",\"subdivisions\",\"exact\","
-                          << "\"first\",\"last\",\"prefix\",\"suffix\",\"contains\"]}\n" << std::flush;
+                          << "\"first\",\"last\",\"prefix\",\"suffix\",\"contains\",\"positions\"]}\n" << std::flush;
+                continue;
+            }
+            if (space.handles(command)) {
+                try {
+                    space.run(command, input);
+                } catch (const std::exception& error) {
+                    emitError(error.what());
+                }
                 continue;
             }
             if (command != "SEARCH" && command != "GENERATE") {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import subprocess
 import tempfile
 import unittest
@@ -118,6 +119,198 @@ class OMRConstraintSolverTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "resolved_unique")
         self.assertEqual(result["solutions"][0]["events"][1]["onset_whole"], "1/2")
+
+    def test_quintuplet_slot_durations_are_representable(self) -> None:
+        # Quarter + five sixteenth-note quintuplet slots (1/20 each) in 2/4.
+        events = [{"id": "q", "candidates": [{"duration": "1/4"}]}]
+        events += [
+            {"id": f"t{i}", "candidates": [{"duration": "1/20"}, {"duration": "1/16"}]}
+            for i in range(5)
+        ]
+        result = self.solver.resolve("2/4", events)
+        self.assertEqual(result["status"], "resolved_unique")
+        onsets = [e["onset_whole"] for e in result["solutions"][0]["events"]]
+        self.assertEqual(onsets, ["0/1", "1/4", "3/10", "7/20", "2/5", "9/20"])
+        for support in result["event_support"][1:]:
+            self.assertEqual(support["eliminated_candidates"], ["1/16"])
+
+    def test_septuplet_and_eleven_tuplet_slots_are_representable(self) -> None:
+        events = [{"id": f"s{i}", "candidates": [{"duration": "1/28"}]} for i in range(7)]
+        events += [{"id": f"e{i}", "candidates": [{"duration": "1/44"}]} for i in range(11)]
+        events.append({"id": "h", "candidates": [{"duration": "1/2"}]})
+        result = self.solver.resolve("4/4", events)
+        self.assertEqual(result["status"], "resolved_unique")
+
+    def test_any_tuplet_and_nested_tuplets_are_exact(self) -> None:
+        # A 13-tuplet of sixteenths in one beat: slot 1/52.
+        result = self.solver.resolve("1/4", [{"id": f"n{i}", "candidates": [{"duration": "1/52"}]} for i in range(13)])
+        self.assertEqual(result["status"], "resolved_unique")
+        # 9:8 sixteenths whose last two slots hold a 9:8 of sixty-fourths: 7 x 1/18 + 9 x 1/81.
+        events = [{"id": f"o{i}", "candidates": [{"duration": "1/18"}]} for i in range(7)]
+        events += [{"id": f"i{i}", "candidates": [{"duration": "1/81"}, {"duration": "1/64"}]} for i in range(9)]
+        result = self.solver.resolve("1/2", events, max_note_denominator=64)
+        self.assertEqual(result["status"], "resolved_unique")
+        self.assertEqual(result["event_support"][-1]["eliminated_candidates"], ["1/64"])
+
+    def test_counts_beyond_64_bits_are_exact_in_log2(self) -> None:
+        # 120 events of 1/128 or 1/256 filling 3/4: exactly C(120, 72) readings.
+        events = [{"id": f"e{i}", "candidates": [{"duration": "1/128"}, {"duration": "1/256"}]} for i in range(120)]
+        result = self.solver.resolve("3/4", events)
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertTrue(result["valid_assignments_is_lower_bound"])
+        self.assertAlmostEqual(result["valid_assignments_log2"], math.log2(math.comb(120, 72)), places=4)
+        share = 2 ** (result["event_support"][0]["solution_counts_log2"][0] - result["valid_assignments_log2"])
+        self.assertAlmostEqual(share, 72 / 120, places=6)
+
+    def test_grid_overflow_is_rejected(self) -> None:
+        events = [{"id": f"p{i}", "candidates": [{"duration": f"1/{p}"}]}
+                  for i, p in enumerate((999983, 999979, 999961))]
+        with self.assertRaises(ValueError):
+            self.solver.resolve("4/4", events)
+
+    def test_solution_counts_and_determined_events(self) -> None:
+        # Three bare stems in 4/4: each could be a quarter or a half.
+        bare = [{"id": k, "candidates": [{"duration": "1/4"}, {"duration": "1/2"}]} for k in "abc"]
+        result = self.solver.resolve("4/4", bare)
+        self.assertEqual(result["valid_assignments"], 3)
+        for support in result["event_support"]:
+            self.assertEqual(support["solution_counts"], [2, 1])
+            self.assertFalse(support["determined"])
+        # First and last known as quarters: the middle one is implied.
+        known = [{"id": "a", "candidates": [{"duration": "1/4"}]}, bare[1], {"id": "c", "candidates": [{"duration": "1/4"}]}]
+        result = self.solver.resolve("4/4", known)
+        self.assertEqual(result["status"], "resolved_unique")
+        self.assertTrue(all(s["determined"] for s in result["event_support"]))
+        self.assertEqual(result["event_support"][1]["supported_candidates"], ["1/2"])
+
+    def test_dense_ambiguous_measure_is_solved_exactly_within_default_budget(self) -> None:
+        # 3^24 raw combinations; enumeration used to exhaust the node budget.
+        events = [
+            {"id": f"e{i}", "candidates": [
+                {"duration": "1/16", "confidence": 0.6},
+                {"duration": "1/32", "confidence": 0.4},
+                {"duration": "1/8", "confidence": 0.3},
+            ]}
+            for i in range(24)
+        ]
+        result = self.solver.resolve("4/4", events)
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertFalse(result["truncated"])
+        self.assertEqual(result["valid_assignments"], 1606803)
+        self.assertFalse(result["valid_assignments_is_lower_bound"])
+        for support in result["event_support"]:
+            self.assertTrue(support["support_is_complete"])
+            self.assertEqual(support["unverified_candidates"], [])
+            self.assertEqual(sorted(support["supported_candidates"]), ["1/16", "1/32", "1/8"])
+        scores = [s["log_visual_score"] for s in result["solutions"]]
+        self.assertEqual(len(scores), 20)
+        self.assertEqual(scores, sorted(scores, reverse=True))
+
+    def test_dense_measure_elimination_is_exact(self) -> None:
+        # Sixteen events in 4/4 can only be sixteenth notes.
+        events = [
+            {"id": f"e{i}", "candidates": [{"duration": "1/8"}, {"duration": "1/16"}]}
+            for i in range(16)
+        ]
+        result = self.solver.resolve("4/4", events)
+        self.assertEqual(result["status"], "resolved_unique")
+        for support in result["event_support"]:
+            self.assertEqual(support["eliminated_candidates"], ["1/8"])
+
+    def test_solutions_are_the_best_scoring_assignments(self) -> None:
+        import itertools
+        from fractions import Fraction
+
+        options = [
+            [("1/4", 0.9), ("1/2", 0.3), ("1/8", 0.5)],
+            [("1/4", 0.6), ("1/8", 0.8)],
+            [("1/2", 0.7), ("1/4", 0.4), ("3/8", 0.2)],
+            [("1/8", 0.9), ("1/4", 0.5)],
+            [("1/4", 0.4), ("1/8", 0.6), ("1/2", 0.1)],
+        ]
+        events = [
+            {"id": f"e{i}", "candidates": [{"duration": d, "confidence": c} for d, c in opts]}
+            for i, opts in enumerate(options)
+        ]
+        valid = []
+        for combo in itertools.product(*options):
+            if sum(Fraction(d) for d, _ in combo) == 1:
+                score = sum(math.log(c) for _, c in combo)
+                valid.append(round(score, 4))
+        valid.sort(reverse=True)
+
+        result = self.solver.resolve("4/4", events, limit=4)
+        self.assertEqual(result["valid_assignments"], len(valid))
+        self.assertEqual([round(s["log_visual_score"], 4) for s in result["solutions"]], valid[:4])
+        for solution in result["solutions"]:
+            total = sum(Fraction(e["duration_whole"]) for e in solution["events"])
+            self.assertEqual(total, 1)
+    def test_quintuplet_durations_are_exact(self) -> None:
+        result = self.solver.resolve(
+            "4/4",
+            [{"id": f"q{i}", "candidates": [{"duration": "1/5"}, {"duration": "1/4"}]} for i in range(5)],
+        )
+        self.assertEqual(result["status"], "resolved_unique")
+        self.assertTrue(all(e["duration_whole"] == "1/5" for e in result["solutions"][0]["events"]))
+
+    def test_spurious_event_can_be_removed(self) -> None:
+        result = self.solver.resolve(
+            "4/4",
+            [
+                {"id": "a", "candidates": [{"duration": "1/2"}]},
+                {"id": "b", "candidates": [{"duration": "1/4"}]},
+                {"id": "dup", "candidates": [{"duration": "1/4", "confidence": 0.6},
+                                             {"duration": "none", "confidence": 0.4}]},
+                {"id": "c", "candidates": [{"duration": "1/4"}]},
+            ],
+        )
+        self.assertEqual(result["status"], "resolved_unique")
+        dup = result["solutions"][0]["events"][2]
+        self.assertFalse(dup["present"])
+        self.assertIn("symbol_existence", result["event_support"][2]["suggested_visual_checks"])
+
+    def test_missing_time_is_reported(self) -> None:
+        result = self.solver.resolve(
+            "4/4",
+            [{"id": "a", "candidates": [{"duration": "1/2"}]}, {"id": "b", "candidates": [{"duration": "1/4"}]}],
+        )
+        self.assertEqual(result["status"], "inconsistent")
+        self.assertEqual(result["gap"], "missing")
+        self.assertEqual(result["gap_whole"], "1/4")
+
+    def test_excess_time_is_reported(self) -> None:
+        result = self.solver.resolve(
+            "3/4",
+            [{"id": "a", "candidates": [{"duration": "1/2"}]}, {"id": "b", "candidates": [{"duration": "1/2"}]}],
+        )
+        self.assertEqual(result["gap"], "excess")
+        self.assertEqual(result["gap_whole"], "1/4")
+
+    def _dotted_pair_measure(self, **kw):
+        # 2/4: [dotted eighth, sixteenth] [eighth, eighth]; the sixteenth's short beam was missed,
+        # so b is read as an eighth: the measure is 1/16 too long, and any of b, c, d could be shortened
+        c8 = [{"duration": "1/8", "confidence": 0.6}, {"duration": "1/16", "confidence": 0.4}]
+        events = [
+            {"id": "a", "candidates": [{"duration": "3/16", "confidence": 0.9}, {"duration": "1/8", "confidence": 0.1}]},
+            {"id": "b", "candidates": c8}, {"id": "c", "candidates": c8}, {"id": "d", "candidates": c8},
+        ]
+        return self.solver.resolve("2/4", events, limit=5, **kw)
+
+    def test_beam_groups_prefer_beat_aligned_solution(self) -> None:
+        plain = self._dotted_pair_measure()
+        top = plain["solutions"][0]["log_visual_score"]
+        self.assertEqual(sum(abs(s["log_visual_score"] - top) < 1e-9 for s in plain["solutions"]), 3)
+        grouped = self._dotted_pair_measure(beat="1/4", groups=[["a", "b"], ["c", "d"]])
+        best = grouped["solutions"][0]["events"]
+        self.assertEqual([e["duration_whole"] for e in best], ["3/16", "1/16", "1/8", "1/8"])
+        self.assertGreater(best and grouped["solutions"][0]["log_visual_score"],
+                           grouped["solutions"][1]["log_visual_score"] + 1.0)
+
+    def test_groups_require_known_consecutive_events(self) -> None:
+        with self.assertRaises(ValueError):
+            self._dotted_pair_measure(beat="1/4", groups=[["a", "c"]])
+        with self.assertRaises(ValueError):
+            self._dotted_pair_measure(groups=[["a", "b"]])
 
 
 if __name__ == "__main__":
