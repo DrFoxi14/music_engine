@@ -375,6 +375,7 @@ struct StemResult {
     int anchor = -1;
     std::string direction;
     std::vector<size_t> atFreeEnd;       // noteheads found at the free end (conflict)
+    std::vector<size_t> across;          // touching heads across the stem: another voice's, not a second or unison
 };
 
 struct Event {
@@ -451,6 +452,12 @@ private:
     double beamReach() const { return 6.0 * s_; }   // room for 8 stacked beams
 
     Point end(const Stem& stem, int which) const { return which == 0 ? stem.a : stem.b; }
+
+    // The stem's x at height y (stems may be tilted).
+    static double stemXAt(const Stem& stem, double y) {
+        const double dy = stem.b.y - stem.a.y;
+        return std::abs(dy) < 1e-9 ? stem.a.x : stem.a.x + (stem.b.x - stem.a.x) * (y - stem.a.y) / dy;
+    }
 
     // Flags and beams at each end of a stem (no notehead is needed for this).
     void attachments(const Stem& stem, StemResult& res) {
@@ -545,18 +552,40 @@ private:
         if (!res.atFreeEnd.empty())
             guidance_.push_back({stem.id, "notehead_at_free_end", {"notehead_detection", "flag_or_beam_end"}});
 
-        // Chord: every connected notehead except those at the free end.
-        for (size_t i : res.touching)
-            if (std::find(res.atFreeEnd.begin(), res.atFreeEnd.end(), i) == res.atFreeEnd.end())
-                res.chord.push_back(i);
+        const Point head = end(stem, res.headEnd), freeP = end(stem, res.freeEnd);
+        res.direction = head.y > freeP.y ? "up" : "down";
+
+        // Chord: the connected noteheads except those at the free end, on the head
+        // side of the stem (left of an up stem, right of a down stem). Across the
+        // stem a head belongs to the chord only as the displaced head of a second
+        // (one step from a member, toward the free end) or of a unison (level with
+        // a member). Otherwise it is the head of another voice whose stem runs
+        // close to this one.
+        const double side = res.direction == "up" ? -1.0 : 1.0;
+        const double towardFree = freeP.y < head.y ? -1.0 : 1.0;
+        std::vector<size_t> across;
+        for (size_t i : res.touching) {
+            if (std::find(res.atFreeEnd.begin(), res.atFreeEnd.end(), i) != res.atFreeEnd.end()) continue;
+            const Point c = r_.noteheads[i].box.center();
+            (side * (c.x - stemXAt(stem, c.y)) > -0.15 * s_ ? res.chord : across).push_back(i);
+        }
+        for (size_t i : across) {
+            const double y = r_.noteheads[i].box.center().y;
+            const bool second = std::any_of(res.chord.begin(), res.chord.end(), [&](size_t j) {
+                const double step = (y - r_.noteheads[j].box.center().y) * towardFree;
+                return step > -0.25 * s_ && step <= 0.75 * s_;
+            });
+            (second ? res.chord : res.across).push_back(i);
+        }
+        if (!res.across.empty())
+            guidance_.push_back({stem.id, "notehead_across_stem_not_a_second", {"voice_separation", "stem_detection"}});
 
         double best = kInf;
         for (size_t i : res.nearEnd[res.headEnd]) {
+            if (std::find(res.chord.begin(), res.chord.end(), i) == res.chord.end()) continue;
             const double d = boxPoint(r_.noteheads[i].box, end(stem, res.headEnd));
             if (d < best) { best = d; res.anchor = static_cast<int>(i); }
         }
-        const Point head = end(stem, res.headEnd), freeP = end(stem, res.freeEnd);
-        res.direction = head.y > freeP.y ? "up" : "down";
         if (res.anchor < 0) {
             res.status = "notehead_missing_at_notehead_end";
             guidance_.push_back({stem.id, "notehead_missing_at_notehead_end", {"notehead_detection_near_endpoint"}});
@@ -631,9 +660,12 @@ private:
     void buildStemlessEvents() {
         std::vector<size_t> free;
         for (size_t i = 0; i < r_.noteheads.size(); ++i) {
+            // A head touching a stem belongs to it, unless it lies across the stem as
+            // another voice's head: then it is free if no stem claims it.
             bool owned = false;
             for (const auto& st : stems_)
-                if (std::find(st.touching.begin(), st.touching.end(), i) != st.touching.end()) owned = true;
+                if (std::find(st.touching.begin(), st.touching.end(), i) != st.touching.end() &&
+                    std::find(st.across.begin(), st.across.end(), i) == st.across.end()) owned = true;
             if (!owned) free.push_back(i);
         }
         // Group stemless heads that overlap horizontally into one chord event.
@@ -891,6 +923,16 @@ public:
             auto dotBox = [&](const Box& head, double top, double bottom) {
                 return Box{head.right, top, head.right + 3.0 * s_, bottom};
             };
+            // Chord members sit along the stem from the notehead end, never within
+            // 1.5 spaces of the free end. The head of a second is set on the other
+            // side of the stem, so the box spans both sides.
+            auto chordBox = [&](Point h, Point f, Box* box) {
+                const double towardFree = f.y < h.y ? -1.0 : 1.0;
+                const double chordFar = f.y - towardFree * 1.5 * s_;
+                if ((chordFar - h.y) * towardFree <= 0.5 * s_) return false;
+                *box = Box{h.x - 1.8 * s_, std::min(h.y, chordFar), h.x + 1.8 * s_, std::max(h.y, chordFar)};
+                return true;
+            };
             if (freeEnd >= 0) {
                 const int headEnd = 1 - freeEnd;
                 const Point h = end(stem, headEnd), f = end(stem, freeEnd);
@@ -898,16 +940,12 @@ public:
                                             names[freeEnd] + " marks it free; notehead at " + names[headEnd];
                 const Box head = headBox(h, direction);
                 addRegion("notehead", nullptr, head, because);
-                // Chord members sit along the stem, never at the free end.
-                const double towardFree = f.y < h.y ? -1.0 : 1.0;
-                const double chordFar = f.y - towardFree * 1.5 * s_;
-                double top = std::min(h.y + towardFree * 0.5 * s_, chordFar);
-                double bottom = std::max(h.y + towardFree * 0.5 * s_, chordFar);
-                if ((chordFar - h.y) * towardFree > 0.5 * s_)
-                    addRegion("chord_noteheads", nullptr, Box{head.left, top, head.right, bottom},
-                              "further heads of a chord share this stem, away from the free end");
+                Box chord = head;
+                if (chordBox(h, f, &chord))
+                    addRegion("chord_noteheads", nullptr, chord,
+                              "further heads of a chord share this stem, away from the free end (a second on either side)");
                 addRegion("augmentation_dots", nullptr,
-                          dotBox(head, std::min(head.top, top), std::max(head.bottom, bottom)),
+                          dotBox(head, std::min(head.top, chord.top), std::max(head.bottom, chord.bottom)),
                           "dots right of the head(s)");
             } else if (branch == "quarter_branch") {
                 for (int e = 0; e < 2; ++e) {
@@ -915,7 +953,14 @@ public:
                     const Box head = headBox(p, "");
                     addRegion("notehead", names[e], head,
                               std::string("no flag or beam: test end ") + names[e] + " (exactly one should hold the head)");
-                    addRegion("augmentation_dots", names[e], dotBox(head, head.top, head.bottom),
+                    // A chord is as common without flag or beam: its members along
+                    // the stem, if the head is at this end.
+                    Box chord = head;
+                    if (chordBox(p, end(stem, 1 - e), &chord))
+                        addRegion("chord_noteheads", names[e], chord,
+                                  std::string("chord members along the stem, if the head is at ") + names[e]);
+                    addRegion("augmentation_dots", names[e],
+                              dotBox(head, std::min(head.top, chord.top), std::max(head.bottom, chord.bottom)),
                               std::string("dots, if the head is at ") + names[e]);
                 }
             }

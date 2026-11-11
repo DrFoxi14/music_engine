@@ -275,7 +275,7 @@ For each stem with real endpoints A and B (no orientation assumed):
 - Stem length is never a rule. Tolerances are multiples of the staff spacing, so short, long or tilted handwritten stems give the same reading.
 - The number of flags or stacked beams at the free end gives the subdivision (1 → 1/8, 2 → 1/16, ...). It never makes the end ambiguous.
 - Without flag or beam, the head fill separates half (hollow) from quarter (filled). An uncertain fill yields both candidates with the fill confidence.
-- Noteheads along the stem form one chord event, anchored at the notehead end. Dots to the right of a head extend the duration. Tuplet brackets (`3`, or explicit `5:6`) scale their members and multiply when nested.
+- Noteheads along the stem form one chord event, anchored at the notehead end. A chord head sits on the head side of the stem (left of an up stem, right of a down stem); across the stem only the displaced head of a second (one step toward the free end) or of a unison belongs to the chord. Any other head across the stem is another voice's head that touches it; it is left to its own stem, or becomes a stemless head (guidance `notehead_across_stem_not_a_second`). Dots to the right of a head extend the duration. Tuplet brackets (`3`, or explicit `5:6`) scale their members and multiply when nested.
 - Rests come from the dedicated rest recognizer and are only placed on the timeline. Stemless hollow heads are whole notes. A stemless filled head lists every filled-head reading and asks for a stem recheck.
 - Contradictions are reported, never guessed: flag or beam at both ends, noteheads at both ends, a stem without a notehead, a notehead at the free end, a notehead shared by several stems.
 
@@ -313,7 +313,7 @@ The stem is the unit; noteheads, dots, rests and pitch are completions. `PLAN` t
 1. The Visual Engine finds only stems and what touches their ends (flags, beams).
 2. `PLAN` decides, for each stem, the free end and the direction, plus the duration the stem already implies (`durations_before_heads`: 1 beam → 1/8, ..., none → 1/4 or 1/2). It also returns the regions to search:
    - `notehead`: one box at the notehead end, beside the stem on the side the direction implies. In the quarter-note branch there is one box per end, and exactly one of them should hold the head.
-   - `chord_noteheads`: along the stem, away from the free end.
+   - `chord_noteheads`: along the stem from the notehead end to 1.5 spaces before the free end, on both sides of the stem (the head of a second is set on the other side). In the quarter-note branch there is one per end, with that end's hypothesis: a chord is as common without flag or beam.
    - `augmentation_dots`: right of the head, on its row.
 3. The Visual Engine confirms noteheads and dots only inside those regions, then `ANALYZE` reads the bar as before.
 
@@ -328,7 +328,7 @@ result = read_measure_stem_first(
     detect_dots=lambda regions: vision.find_dots(regions))
 ```
 
-In the end-to-end sweeps every stemmed notehead lies inside its planned region, and reading the bar from those regions alone gives exactly the true durations. On the synthetic layout (one event every four staff spaces, denser than real engraving) the notehead regions cover about 15% of the bar.
+In the end-to-end sweeps every stemmed notehead lies inside its planned region, and reading the bar from those regions alone gives exactly the true durations. On the synthetic layout (one event every four staff spaces, denser than real engraving; 4/4, down to 1/64, 300 sampled bars) the notehead and chord regions cover 15% of the bar (10% before the chord regions took both sides of the stem and the quarter-note branch).
 
 ### Optimal inference: ask Vision only what the bar does not imply
 

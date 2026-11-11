@@ -402,6 +402,39 @@ class StemFirstEngineTests(unittest.TestCase):
         holding = [r for r in heads if self.contains(r, self.center(head("h", 100, 120)))]
         self.assertEqual(len(holding), 1)
 
+    def test_plan_chord_region_holds_a_second_set_on_the_other_side_of_the_stem(self):
+        # Up stem: the upper head of a second sits right of the stem, half a space up.
+        stem = up_stem("s", 100, 120)
+        flag = flag_at("f", top(stem))
+        anchor, second = head("lo", 100, 120), head("hi", 112, 115)
+        plan = self.engine.plan(S, stems=[stem], flags=[flag])
+        regions = regions_of(plan, "notehead", "chord_noteheads")
+        self.assertEqual([h["id"] for h in in_regions([anchor, second], regions)], ["lo", "hi"])
+        result = self.engine.analyze(S, stems=[stem], flags=[flag], noteheads=in_regions([anchor, second], regions))
+        self.assertEqual(sorted(result["stems"][0]["noteheads"]), ["hi", "lo"])
+
+    def test_two_voices_a_second_apart_keep_their_own_heads(self):
+        # Soprano up stem and alto down stem on the same x, a second apart: each head
+        # touches both stems, but lies across the other voice's stem.
+        sop, alto = head("sop", 100, 110), head("alto", 112, 115)
+        result = self.engine.analyze(S, stems=[up_stem("up", 100, 110), down_stem("dn", 112, 115)], noteheads=[sop, alto])
+        stems = {st["id"]: st["noteheads"] for st in result["stems"]}
+        self.assertEqual(stems, {"up": ["sop"], "dn": ["alto"]})
+        self.assertEqual([e["source"] for e in result["events"]], ["stem", "stem"])
+
+    def test_plan_quarter_branch_searches_the_chord_from_either_end(self):
+        for swap in (False, True):
+            stem = up_stem("q", 100, 120, swap=swap)
+            members = [head("root", 100, 120), head("fifth", 100, 100)]       # a fifth above, on the stem side
+            plan = self.engine.plan(S, stems=[stem])
+            chords = regions_of(plan, "chord_noteheads")
+            self.assertEqual(sorted(r["hypothesis"] for r in chords), ["A", "B"])
+            head_end = "B" if swap else "A"
+            self.assertEqual([h["id"] for h in in_regions(members, [r for r in regions_of(plan, "notehead", "chord_noteheads")
+                                                                    if r["hypothesis"] == head_end])], ["root", "fifth"])
+            result = self.engine.analyze(S, stems=[stem], noteheads=in_regions(members, regions_of(plan, "notehead", "chord_noteheads")))
+            self.assertEqual(sorted(result["stems"][0]["noteheads"]), ["fifth", "root"])
+
     def test_plan_reads_beam_counts_before_any_head(self):
         stems = [up_stem(f"s{i}", 100 + 25 * i, 120, length=45) for i in range(4)]
         plan = self.engine.plan(S, stems=stems, beams=beams_between("b", stems, [top(s) for s in stems], 3, +1))
