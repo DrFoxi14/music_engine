@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <unordered_map>
 #include <numeric>
 #include <set>
@@ -670,6 +671,200 @@ private:
     }
 };
 
+// ---------------------------------------------------------------- SYSTEM: every voice of a measure at once
+//
+// Paul (IDSR, docs/RECONSTRUCTIE_GLOBALA.md): "we build and narrow down all the possible interpretations of the
+// whole score at the same time". Every voice of one measure is solved together: an event may carry a sync label;
+// the events of different voices with the same label (aligned on the page, one above the other) start at the
+// same time, if present. The domains (for each event: the times it may start at, the durations it may have) are
+// narrowed by propagation to a fixed point: per voice, forward (the times an event can be reached at) and
+// backward (the times from which the rest of the measure can still close), then across the voices, at every
+// sync label, the intersection of the start times. The propagation is sound: it never removes a value that some
+// valid joint reconstruction uses. So a value left alone in its domain is certain; an empty domain is a proven
+// contradiction (no valid reconstruction exists).
+
+struct Bits {
+    size_t n = 0;
+    std::vector<uint64_t> w;
+    explicit Bits(size_t size = 0, bool full = false) : n(size), w((size + 63) / 64, full ? ~uint64_t(0) : 0) { trim(); }
+    void trim() { if (n % 64 && !w.empty()) w.back() &= (uint64_t(1) << (n % 64)) - 1; }
+    bool get(size_t i) const { return i < n && ((w[i / 64] >> (i % 64)) & 1); }
+    void set(size_t i) { if (i < n) w[i / 64] |= uint64_t(1) << (i % 64); }
+    bool any() const { for (uint64_t x : w) if (x) return true; return false; }
+    Bits& operator&=(const Bits& o) { for (size_t i = 0; i < w.size(); ++i) w[i] &= o.w[i]; return *this; }
+    Bits& operator|=(const Bits& o) { for (size_t i = 0; i < w.size(); ++i) w[i] |= o.w[i]; return *this; }
+    bool operator==(const Bits& o) const { return w == o.w; }
+    // every member moved up by k (i -> i + k), what falls off the end is dropped
+    Bits up(uint64_t k) const {
+        Bits r(n);
+        if (k >= n) return r;
+        const size_t ws = k / 64, bs = k % 64;
+        for (size_t i = w.size(); i-- > ws;) {
+            uint64_t v = w[i - ws] << bs;
+            if (bs && i - ws > 0) v |= w[i - ws - 1] >> (64 - bs);
+            r.w[i] = v;
+        }
+        r.trim();
+        return r;
+    }
+    // every member moved down by k (i -> i - k), what falls below 0 is dropped
+    Bits down(uint64_t k) const {
+        Bits r(n);
+        if (k >= n) return r;
+        const size_t ws = k / 64, bs = k % 64;
+        for (size_t i = 0; i + ws < w.size(); ++i) {
+            uint64_t v = w[i + ws] >> bs;
+            if (bs && i + ws + 1 < w.size()) v |= w[i + ws + 1] << (64 - bs);
+            r.w[i] = v;
+        }
+        r.trim();
+        return r;
+    }
+};
+
+struct SysEvent {
+    std::string id, voice, sync;
+    std::vector<Candidate> candidates;
+    Bits allowed;                               // the start times still allowed (narrowed by the sync labels)
+};
+
+class SystemSolver {
+public:
+    SystemSolver(int numerator, int denominator, std::vector<std::vector<SysEvent>> voices, int maxRounds)
+        : voices_(std::move(voices)), maxRounds_(maxRounds) {
+        if (numerator <= 0 || numerator > 10000 || denominator <= 0 || denominator > 4096)
+            throw std::invalid_argument("bad meter");
+        if (voices_.empty()) throw std::invalid_argument("at least one voice is required");
+        // the exact grid: the lcm of every denominator of the request (no finer than needed)
+        uint64_t tpw = static_cast<uint64_t>(denominator);
+        for (auto& v : voices_) for (auto& e : v) for (auto& c : e.candidates) if (c.duration.n) tpw = checkedLcm(tpw, c.duration.d);
+        if (tpw > (uint64_t(1) << 24)) throw std::invalid_argument("grid too fine for the system solver");
+        tpw_ = tpw;
+        L_ = static_cast<uint64_t>(numerator) * tpw_ / static_cast<uint64_t>(denominator);
+        if (L_ > (uint64_t(1) << 26)) throw std::invalid_argument("measure too long for the system solver");
+        std::set<std::string> ids;
+        for (auto& v : voices_) {
+            for (auto& e : v) {
+                if (!ids.insert(e.id).second) throw std::invalid_argument("duplicate event id: " + e.id);
+                for (auto& c : e.candidates) c.ticks = c.duration.n ? c.duration.n * (tpw_ / c.duration.d) : 0;
+                e.allowed = Bits(L_ + 1, true);
+            }
+        }
+    }
+
+    std::string solve() {
+        const size_t V = voices_.size();
+        std::vector<std::vector<Bits>> F(V), B(V);
+        std::vector<std::vector<Bits>> present(V);
+        std::vector<std::vector<bool>> mustPresent(V);
+        std::vector<bool> voiceOk(V, true);
+        int rounds = 0;
+        bool changed = true;
+        while (changed && rounds < maxRounds_) {
+            ++rounds;
+            changed = false;
+            for (size_t v = 0; v < V; ++v) {
+                auto& ev = voices_[v];
+                const size_t n = ev.size();
+                F[v].assign(n + 1, Bits(L_ + 1));
+                B[v].assign(n + 1, Bits(L_ + 1));
+                F[v][0].set(0);
+                for (size_t i = 0; i < n; ++i) {
+                    Bits on = F[v][i];
+                    on &= ev[i].allowed;
+                    Bits next(L_ + 1);
+                    for (auto& c : ev[i].candidates) {
+                        if (c.duration.n == 0) next |= F[v][i];      // absent: no time, the next starts here
+                        else next |= on.up(c.ticks);
+                    }
+                    F[v][i + 1] = next;
+                }
+                B[v][n].set(L_);
+                for (size_t i = n; i-- > 0;) {
+                    Bits back(L_ + 1);
+                    for (auto& c : ev[i].candidates) {
+                        if (c.duration.n == 0) back |= B[v][i + 1];
+                        else { Bits b = B[v][i + 1].down(c.ticks); b &= ev[i].allowed; back |= b; }
+                    }
+                    B[v][i] = back;
+                }
+                voiceOk[v] = F[v][n].get(L_);
+                present[v].assign(n, Bits(L_ + 1));
+                mustPresent[v].assign(n, true);
+                for (size_t i = 0; i < n; ++i) {
+                    for (auto& c : ev[i].candidates) {
+                        if (c.duration.n == 0) {
+                            Bits t = F[v][i]; t &= B[v][i + 1];
+                            if (t.any()) mustPresent[v][i] = false;
+                        } else {
+                            Bits t = F[v][i]; t &= ev[i].allowed; t &= B[v][i + 1].down(c.ticks);
+                            present[v][i] |= t;
+                        }
+                    }
+                }
+            }
+            // across the voices: the events with one sync label start together (when present)
+            std::map<std::string, std::vector<std::pair<size_t, size_t>>> groups;
+            for (size_t v = 0; v < V; ++v)
+                for (size_t i = 0; i < voices_[v].size(); ++i)
+                    if (!voices_[v][i].sync.empty() && voices_[v][i].sync != "-") groups[voices_[v][i].sync].push_back({v, i});
+            for (auto& [label, members] : groups) {
+                for (auto& [v, i] : members) {
+                    Bits lim(L_ + 1, true);
+                    for (auto& [v2, i2] : members) {
+                        if (v2 == v) continue;                            // one voice's own events are ordered already
+                        if (mustPresent[v2][i2]) lim &= present[v2][i2];  // one that may be absent constrains nothing
+                    }
+                    Bits na = voices_[v][i].allowed; na &= lim;
+                    if (!(na == voices_[v][i].allowed)) { voices_[v][i].allowed = na; changed = true; }
+                }
+            }
+        }
+        // the answer: per event, the durations and the start times still possible
+        std::ostringstream out;
+        bool ok = true;
+        for (bool b : voiceOk) ok = ok && b;
+        out << "{\"type\":\"system\",\"status\":\"" << (ok ? "consistent" : "inconsistent") << "\",\"rounds\":" << rounds
+            << ",\"fixed_point\":" << (changed ? "false" : "true")
+            << ",\"ticks_per_whole\":" << tpw_ << ",\"measure_ticks\":" << L_ << ",\"voices\":[";
+        for (size_t v = 0; v < V; ++v) {
+            if (v) out << ',';
+            out << "{\"closes\":" << (voiceOk[v] ? "true" : "false") << ",\"events\":[";
+            for (size_t i = 0; i < voices_[v].size(); ++i) {
+                auto& e = voices_[v][i];
+                if (i) out << ',';
+                out << "{\"id\":\"" << jsonEscape(e.id) << "\",\"supported\":[";
+                bool first = true;
+                for (auto& c : e.candidates) {
+                    bool sup;
+                    if (c.duration.n == 0) { Bits t = F[v][i]; t &= B[v][i + 1]; sup = t.any(); }
+                    else { Bits t = F[v][i]; t &= e.allowed; t &= B[v][i + 1].down(c.ticks); sup = t.any(); }
+                    if (!sup) continue;
+                    if (!first) out << ',';
+                    first = false;
+                    out << '"' << (c.duration.n ? c.duration.str() : std::string("0/1")) << '"';
+                }
+                out << "],\"onsets\":[";
+                size_t k = 0;
+                for (size_t t = 0; t <= L_ && k < 64; ++t) {
+                    if (!present[v][i].get(t)) continue;
+                    if (k++) out << ',';
+                    out << '"' << Rational(t, tpw_).str() << '"';
+                }
+                out << "],\"must_present\":" << (mustPresent[v][i] ? "true" : "false") << '}';
+            }
+            out << "]}";
+        }
+        out << "]}";
+        return out.str();
+    }
+
+private:
+    std::vector<std::vector<SysEvent>> voices_;
+    int maxRounds_;
+    uint64_t tpw_ = 1, L_ = 1;
+};
+
 void emitError(const std::string& message) {
     std::cout << "{\"type\":\"error\",\"message\":\"" << jsonEscape(message) << "\"}\n" << std::flush;
 }
@@ -702,8 +897,37 @@ int main(int argc, char** argv) {
             input >> command;
             for (char& c : command) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             if (command == "EXIT" || command == "QUIT") break;
+            if (command == "SYSTEM") {
+                // SYSTEM num den [max_rounds=N] voice=NAME id@sync=1/4:0.9|none ... voice=NAME2 ...
+                try {
+                    std::string numText, denText;
+                    input >> numText >> denText;
+                    const int numerator = static_cast<int>(parseUInt(numText, "meter numerator"));
+                    const int denominator = static_cast<int>(parseUInt(denText, "meter denominator"));
+                    int maxRounds = 64;
+                    std::vector<std::vector<SysEvent>> voices;
+                    std::string token, voice;
+                    while (input >> token) {
+                        if (token.rfind("max_rounds=", 0) == 0) { maxRounds = static_cast<int>(parseUInt(token.substr(11), "max_rounds")); continue; }
+                        if (token.rfind("voice=", 0) == 0) { voice = token.substr(6); voices.emplace_back(); continue; }
+                        if (voices.empty()) throw std::invalid_argument("an event before any voice=");
+                        const size_t at = token.find('@'), eq = token.find('=');
+                        if (at == std::string::npos || eq == std::string::npos || at > eq) throw std::invalid_argument("event must look like id@sync=1/4|none");
+                        InputEvent parsed = parseEvent(token.substr(0, at) + token.substr(eq));
+                        SysEvent e;
+                        e.id = parsed.id; e.voice = voice; e.sync = token.substr(at + 1, eq - at - 1);
+                        e.candidates = std::move(parsed.candidates);
+                        voices.back().push_back(std::move(e));
+                    }
+                    SystemSolver solver(numerator, denominator, std::move(voices), maxRounds);
+                    std::cout << solver.solve() << '\n' << std::flush;
+                } catch (const std::exception& error) {
+                    emitError(error.what());
+                }
+                continue;
+            }
             if (command != "RESOLVE") {
-                emitError("unknown command; use RESOLVE or EXIT");
+                emitError("unknown command; use RESOLVE, SYSTEM or EXIT");
                 continue;
             }
 

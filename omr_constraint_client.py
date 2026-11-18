@@ -67,6 +67,43 @@ class OMRConstraintClient:
 
         return f"{numerator}/{denominator}:{confidence:.12g}"
 
+    def resolve_system(
+        self,
+        meter: str,
+        voices: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
+        *,
+        max_rounds: int = 64,
+    ) -> dict[str, Any]:
+        """Every voice of one measure at once (SYSTEM). `voices`: [(name, events)]; each event
+        {"id": "s1", "sync": "a" or None, "candidates": [{"duration": "1/4"}, {"duration": "none"}]}.
+        Events of different voices with one sync label start together when present. Returns per voice and
+        per event the durations ("supported") and start times ("onsets", whole notes) still possible after
+        propagation to the fixed point; sound (no valid joint reconstruction is ever removed)."""
+        num, den = (int(part) for part in meter.split("/"))
+        tokens = ["SYSTEM", str(num), str(den), f"max_rounds={int(max_rounds)}"]
+        for name, events in voices:
+            tokens.append("voice=" + self._validate_id(str(name)))
+            for event in events:
+                eid = self._validate_id(str(event["id"]))
+                sync = event.get("sync") or "-"
+                if sync != "-":
+                    self._validate_id(str(sync))
+                cands = "|".join(self._candidate_text(c) for c in event["candidates"])
+                tokens.append(f"{eid}@{sync}={cands}")
+        with self._lock:
+            if self._process.poll() is not None:
+                raise RuntimeError("OMR solver process has stopped.")
+            assert self._process.stdin is not None and self._process.stdout is not None
+            self._process.stdin.write(" ".join(tokens) + "\n")
+            self._process.stdin.flush()
+            line = self._process.stdout.readline()
+            if not line:
+                raise RuntimeError("OMR solver closed its response stream.")
+        result = json.loads(line)
+        if result.get("type") == "error":
+            raise ValueError(result.get("message", "system solver error"))
+        return result
+
     def resolve(
         self,
         meter: str,
