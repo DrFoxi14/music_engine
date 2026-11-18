@@ -726,12 +726,14 @@ struct SysEvent {
     std::string id, voice, sync;
     std::vector<Candidate> candidates;
     Bits allowed;                               // the start times still allowed (narrowed by the sync labels)
+    bool noneForbidden = false;                 // must be present (narrowed by an exclusive pair)
 };
 
 class SystemSolver {
 public:
-    SystemSolver(int numerator, int denominator, std::vector<std::vector<SysEvent>> voices, int maxRounds)
-        : voices_(std::move(voices)), maxRounds_(maxRounds) {
+    SystemSolver(int numerator, int denominator, std::vector<std::vector<SysEvent>> voices, int maxRounds,
+                 std::vector<std::pair<std::string, std::string>> xors = {})
+        : voices_(std::move(voices)), maxRounds_(maxRounds), xors_(std::move(xors)) {
         if (numerator <= 0 || numerator > 10000 || denominator <= 0 || denominator > 4096)
             throw std::invalid_argument("bad meter");
         if (voices_.empty()) throw std::invalid_argument("at least one voice is required");
@@ -743,6 +745,8 @@ public:
         L_ = static_cast<uint64_t>(numerator) * tpw_ / static_cast<uint64_t>(denominator);
         if (L_ > (uint64_t(1) << 26)) throw std::invalid_argument("measure too long for the system solver");
         std::set<std::string> ids;
+        for (size_t vv = 0; vv < voices_.size(); ++vv)
+            for (size_t ii = 0; ii < voices_[vv].size(); ++ii) where_[voices_[vv][ii].id] = {vv, ii};
         for (auto& v : voices_) {
             for (auto& e : v) {
                 if (!ids.insert(e.id).second) throw std::invalid_argument("duplicate event id: " + e.id);
@@ -774,7 +778,7 @@ public:
                     on &= ev[i].allowed;
                     Bits next(L_ + 1);
                     for (auto& c : ev[i].candidates) {
-                        if (c.duration.n == 0) next |= F[v][i];      // absent: no time, the next starts here
+                        if (c.duration.n == 0) { if (!ev[i].noneForbidden) next |= F[v][i]; }   // absent: no time
                         else next |= on.up(c.ticks);
                     }
                     F[v][i + 1] = next;
@@ -783,7 +787,7 @@ public:
                 for (size_t i = n; i-- > 0;) {
                     Bits back(L_ + 1);
                     for (auto& c : ev[i].candidates) {
-                        if (c.duration.n == 0) back |= B[v][i + 1];
+                        if (c.duration.n == 0) { if (!ev[i].noneForbidden) back |= B[v][i + 1]; }
                         else { Bits b = B[v][i + 1].down(c.ticks); b &= ev[i].allowed; back |= b; }
                     }
                     B[v][i] = back;
@@ -794,6 +798,7 @@ public:
                 for (size_t i = 0; i < n; ++i) {
                     for (auto& c : ev[i].candidates) {
                         if (c.duration.n == 0) {
+                            if (ev[i].noneForbidden) continue;
                             Bits t = F[v][i]; t &= B[v][i + 1];
                             if (t.any()) mustPresent[v][i] = false;
                         } else {
@@ -819,6 +824,21 @@ public:
                     if (!(na == voices_[v][i].allowed)) { voices_[v][i].allowed = na; changed = true; }
                 }
             }
+            // exactly one of each exclusive pair is present: one that cannot be present makes the other
+            // present; one that must be present makes the other absent
+            for (auto& [a, b] : xors_) {
+                auto ia = where_.find(a), ib = where_.find(b);
+                if (ia == where_.end() || ib == where_.end()) continue;
+                for (int side = 0; side < 2; ++side) {
+                    auto [va, ea] = side ? ib->second : ia->second;
+                    auto [vb, eb] = side ? ia->second : ib->second;
+                    const bool canA = present[va][ea].any();
+                    if (!canA && !voices_[vb][eb].noneForbidden) { voices_[vb][eb].noneForbidden = true; changed = true; }
+                    if (mustPresent[va][ea] && voices_[vb][eb].allowed.any()) {
+                        voices_[vb][eb].allowed = Bits(L_ + 1); changed = true;
+                    }
+                }
+            }
         }
         // the answer: per event, the durations and the start times still possible
         std::ostringstream out;
@@ -837,7 +857,7 @@ public:
                 bool first = true;
                 for (auto& c : e.candidates) {
                     bool sup;
-                    if (c.duration.n == 0) { Bits t = F[v][i]; t &= B[v][i + 1]; sup = t.any(); }
+                    if (c.duration.n == 0) { Bits t = F[v][i]; t &= B[v][i + 1]; sup = !e.noneForbidden && t.any(); }
                     else { Bits t = F[v][i]; t &= e.allowed; t &= B[v][i + 1].down(c.ticks); sup = t.any(); }
                     if (!sup) continue;
                     if (!first) out << ',';
@@ -862,6 +882,8 @@ public:
 private:
     std::vector<std::vector<SysEvent>> voices_;
     int maxRounds_;
+    std::vector<std::pair<std::string, std::string>> xors_;
+    std::map<std::string, std::pair<size_t, size_t>> where_;
     uint64_t tpw_ = 1, L_ = 1;
 };
 
@@ -906,10 +928,17 @@ int main(int argc, char** argv) {
                     const int denominator = static_cast<int>(parseUInt(denText, "meter denominator"));
                     int maxRounds = 64;
                     std::vector<std::vector<SysEvent>> voices;
+                    std::vector<std::pair<std::string, std::string>> xors;
                     std::string token, voice;
                     while (input >> token) {
                         if (token.rfind("max_rounds=", 0) == 0) { maxRounds = static_cast<int>(parseUInt(token.substr(11), "max_rounds")); continue; }
                         if (token.rfind("voice=", 0) == 0) { voice = token.substr(6); voices.emplace_back(); continue; }
+                        if (token.rfind("xor=", 0) == 0) {
+                            auto ab = split(token.substr(4), ',');
+                            if (ab.size() != 2) throw std::invalid_argument("xor=a,b names two events");
+                            xors.push_back({ab[0], ab[1]});
+                            continue;
+                        }
                         if (voices.empty()) throw std::invalid_argument("an event before any voice=");
                         const size_t at = token.find('@'), eq = token.find('=');
                         if (at == std::string::npos || eq == std::string::npos || at > eq) throw std::invalid_argument("event must look like id@sync=1/4|none");
@@ -919,7 +948,7 @@ int main(int argc, char** argv) {
                         e.candidates = std::move(parsed.candidates);
                         voices.back().push_back(std::move(e));
                     }
-                    SystemSolver solver(numerator, denominator, std::move(voices), maxRounds);
+                    SystemSolver solver(numerator, denominator, std::move(voices), maxRounds, std::move(xors));
                     std::cout << solver.solve() << '\n' << std::flush;
                 } catch (const std::exception& error) {
                     emitError(error.what());

@@ -73,8 +73,10 @@ class OMRConstraintClient:
         voices: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
         *,
         max_rounds: int = 64,
+        xors: Sequence[tuple[str, str]] = (),
     ) -> dict[str, Any]:
-        """Every voice of one measure at once (SYSTEM). `voices`: [(name, events)]; each event
+        """Every voice of one measure at once (SYSTEM). `xors`: pairs of event ids of which exactly one is
+        present (one symbol that is in one voice or the other). `voices`: [(name, events)]; each event
         {"id": "s1", "sync": "a" or None, "candidates": [{"duration": "1/4"}, {"duration": "none"}]}.
         Events of different voices with one sync label start together when present. Returns per voice and
         per event the durations ("supported") and start times ("onsets", whole notes) still possible after
@@ -90,6 +92,8 @@ class OMRConstraintClient:
                     self._validate_id(str(sync))
                 cands = "|".join(self._candidate_text(c) for c in event["candidates"])
                 tokens.append(f"{eid}@{sync}={cands}")
+        for a, b in xors:
+            tokens.append(f"xor={self._validate_id(str(a))},{self._validate_id(str(b))}")
         with self._lock:
             if self._process.poll() is not None:
                 raise RuntimeError("OMR solver process has stopped.")
