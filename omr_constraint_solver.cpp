@@ -732,8 +732,9 @@ struct SysEvent {
 class SystemSolver {
 public:
     SystemSolver(int numerator, int denominator, std::vector<std::vector<SysEvent>> voices, int maxRounds,
-                 std::vector<std::pair<std::string, std::string>> xors = {})
-        : voices_(std::move(voices)), maxRounds_(maxRounds), xors_(std::move(xors)) {
+                 std::vector<std::pair<std::string, std::string>> xors = {},
+                 std::vector<std::pair<std::string, std::string>> ors = {})
+        : voices_(std::move(voices)), maxRounds_(maxRounds), xors_(std::move(xors)), ors_(std::move(ors)) {
         if (numerator <= 0 || numerator > 10000 || denominator <= 0 || denominator > 4096)
             throw std::invalid_argument("bad meter");
         if (voices_.empty()) throw std::invalid_argument("at least one voice is required");
@@ -824,6 +825,17 @@ public:
                     if (!(na == voices_[v][i].allowed)) { voices_[v][i].allowed = na; changed = true; }
                 }
             }
+            // at least one of each "or" pair is present (one symbol in one voice, the other, or both: its ink
+            // stays explained): one that cannot be present makes the other present
+            for (auto& [a, b] : ors_) {
+                auto ia = where_.find(a), ib = where_.find(b);
+                if (ia == where_.end() || ib == where_.end()) continue;
+                for (int side = 0; side < 2; ++side) {
+                    auto [va, ea] = side ? ib->second : ia->second;
+                    auto [vb, eb] = side ? ia->second : ib->second;
+                    if (!present[va][ea].any() && !voices_[vb][eb].noneForbidden) { voices_[vb][eb].noneForbidden = true; changed = true; }
+                }
+            }
             // exactly one of each exclusive pair is present: one that cannot be present makes the other
             // present; one that must be present makes the other absent
             for (auto& [a, b] : xors_) {
@@ -882,7 +894,7 @@ public:
 private:
     std::vector<std::vector<SysEvent>> voices_;
     int maxRounds_;
-    std::vector<std::pair<std::string, std::string>> xors_;
+    std::vector<std::pair<std::string, std::string>> xors_, ors_;
     std::map<std::string, std::pair<size_t, size_t>> where_;
     uint64_t tpw_ = 1, L_ = 1;
 };
@@ -928,11 +940,17 @@ int main(int argc, char** argv) {
                     const int denominator = static_cast<int>(parseUInt(denText, "meter denominator"));
                     int maxRounds = 64;
                     std::vector<std::vector<SysEvent>> voices;
-                    std::vector<std::pair<std::string, std::string>> xors;
+                    std::vector<std::pair<std::string, std::string>> xors, ors;
                     std::string token, voice;
                     while (input >> token) {
                         if (token.rfind("max_rounds=", 0) == 0) { maxRounds = static_cast<int>(parseUInt(token.substr(11), "max_rounds")); continue; }
                         if (token.rfind("voice=", 0) == 0) { voice = token.substr(6); voices.emplace_back(); continue; }
+                        if (token.rfind("or=", 0) == 0) {
+                            auto ab = split(token.substr(3), ',');
+                            if (ab.size() != 2) throw std::invalid_argument("or=a,b names two events");
+                            ors.push_back({ab[0], ab[1]});
+                            continue;
+                        }
                         if (token.rfind("xor=", 0) == 0) {
                             auto ab = split(token.substr(4), ',');
                             if (ab.size() != 2) throw std::invalid_argument("xor=a,b names two events");
@@ -948,7 +966,7 @@ int main(int argc, char** argv) {
                         e.candidates = std::move(parsed.candidates);
                         voices.back().push_back(std::move(e));
                     }
-                    SystemSolver solver(numerator, denominator, std::move(voices), maxRounds, std::move(xors));
+                    SystemSolver solver(numerator, denominator, std::move(voices), maxRounds, std::move(xors), std::move(ors));
                     std::cout << solver.solve() << '\n' << std::flush;
                 } catch (const std::exception& error) {
                     emitError(error.what());
